@@ -31,4 +31,4 @@ Run targeted tests for code behavior changes and `pnpm build`, `pnpm lint`, and 
 
 ## Publishing
 
-Package names are `@proofstate/*`. All eight packages have a `0.1.0-rc.1` prerelease on npm under the `next` tag. Later releases use the reviewed `.github/workflows/publish.yml` workflow with npm trusted publishing scoped separately to each package. Before tagging, audit package contents, run CI and authenticated server compatibility checks, and confirm the matching server protocol. Use the `npm` protected GitHub environment and do not store npm tokens in this repository.
+Package names are `@proofstate/*`. All eight packages have a `0.1.0-rc.2` prerelease on npm under the `next` tag. Later releases use the reviewed `.github/workflows/publish.yml` workflow with npm trusted publishing scoped separately to each package. Before tagging, audit package contents, run CI and authenticated server compatibility checks, and confirm the matching server protocol. Use the `npm` protected GitHub environment and do not store npm tokens in this repository.

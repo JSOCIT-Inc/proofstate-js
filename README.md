@@ -2,7 +2,7 @@
 
 Eight modular packages for traces, prompts, datasets, scores, and framework integrations with [ProofState](https://proofstate.ai). The required MIT copyright and license notices are in [LICENSE](LICENSE).
 
-All eight `0.1.0-rc.1` packages are published on npm under the `next` dist-tag. Authenticated checks against `https://proofstate.ai` on 2026-09-28 covered tracing, v2 observation readback, and prompt creation, retrieval, and compilation. Use a test project when adopting a prerelease.
+All eight `0.1.0-rc.2` packages are published on npm under the `next` dist-tag. Authenticated checks against `https://proofstate.ai` on 2026-09-28 covered tracing, v2 observation readback, and prompt creation, retrieval, and compilation. Use a test project when adopting a prerelease.
 
 ## Packages
 
@@ -81,4 +81,4 @@ The SDK sends `X-ProofState-*` headers, `proofstate.*` span attributes, the `pro
 3. Ensure **each of the eight packages** has a GitHub Actions trusted publisher configured on npm for repository `JSOCIT-Inc/proofstate-js`, workflow `publish.yml`, and environment `npm`, with direct publish permission. The [release workflow](.github/workflows/publish.yml) uses OIDC without a stored npm token and publishes public packages with provenance.
 4. Update the root and eight package versions together, create and push a `js-v<version>` tag on the reviewed commit, then manually run the `Publish npm prerelease` workflow on that tag. Enter the tag exactly in `confirm_tag`; the workflow publishes in dependency order under `next`.
 
-The first `0.1.0-rc.1` packages were published manually because trusted publishers require packages to exist first. Building or packing this repository does not publish packages.
+The first `0.1.0-rc.1` packages were published manually because trusted publishers require packages to exist first. The `0.1.0-rc.2` packages were published by the protected GitHub OIDC workflow. Building or packing this repository does not publish packages.
