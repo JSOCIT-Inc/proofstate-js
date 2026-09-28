@@ -31,4 +31,4 @@ Run targeted tests for code behavior changes and `pnpm build`, `pnpm lint`, and 
 
 ## Publishing
 
-Package names are `@proofstate/*`. The upstream automated release workflow and release scripts were removed. Publishing requires an owned ProofState repository and npm scope, audited package contents, authenticated E2E verification, and a new release workflow. Do not push or publish from this source clone.
+Package names are `@proofstate/*`. All eight packages have a `0.1.0-rc.1` prerelease on npm under the `next` tag. Later releases use the reviewed `.github/workflows/publish.yml` workflow with npm trusted publishing scoped separately to each package. Before tagging, audit package contents, run CI and authenticated server compatibility checks, and confirm the matching server protocol. Use the `npm` protected GitHub environment and do not store npm tokens in this repository.
