@@ -1,0 +1,42 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/" # Location of package manifests
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7
+    versioning-strategy: "increase"
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+      include: scope
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  #this in combination makes dependabot to ignore all dependencies found in the examples folder
+  - package-ecosystem: "npm"
+    directory: "/examples"
+    schedule:
+      interval: "daily"
+    # making zizmor happy as it requires a cooldown value, but we ignore all dependencies in this folder anyway
+    cooldown:
+      default-days: 7
+    labels: []
+    ignore:
+      - dependency-name: "*"

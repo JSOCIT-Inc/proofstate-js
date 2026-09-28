@@ -1,0 +1,132 @@
+import { defineWorkspace } from "vitest/config";
+
+export default defineWorkspace([
+  {
+    test: {
+      name: "unit",
+      environment: "happy-dom",
+      include: ["tests/unit/**/*.test.ts"],
+    },
+    resolve: {
+      alias: {
+        "@proofstate/browser": new URL(
+          "./packages/browser/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/client": new URL(
+          "./packages/client/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/tracing": new URL(
+          "./packages/tracing/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/otel": new URL(
+          "./packages/otel/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/langchain": new URL(
+          "./packages/langchain/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/openai": new URL(
+          "./packages/openai/src/index.ts",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/core": new URL(
+          "./packages/core/src/index.ts",
+          import.meta.url,
+        ).pathname,
+      },
+    },
+  },
+  {
+    test: {
+      name: "integration",
+      environment: "node",
+      include: ["tests/integration/**/*.test.ts"],
+      setupFiles: ["./vitest.setup.ts"],
+    },
+    resolve: {
+      alias: {
+        "@proofstate/browser": new URL(
+          "./packages/browser/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/client": new URL(
+          "./packages/client/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/tracing": new URL(
+          "./packages/tracing/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/otel": new URL(
+          "./packages/otel/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/langchain": new URL(
+          "./packages/langchain/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/openai": new URL(
+          "./packages/openai/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/vercel-ai-sdk": new URL(
+          "./packages/vercel-ai-sdk/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/core": new URL(
+          "./packages/core/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+      },
+    },
+  },
+  {
+    test: {
+      name: "e2e",
+      environment: "node",
+      include: ["tests/e2e/**/*.test.ts"],
+      setupFiles: ["./vitest.setup.ts"],
+      testTimeout: 30000, // Longer timeout for real HTTP calls
+    },
+    resolve: {
+      alias: {
+        "@proofstate/browser": new URL(
+          "./packages/browser/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/client": new URL(
+          "./packages/client/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/tracing": new URL(
+          "./packages/tracing/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/otel": new URL(
+          "./packages/otel/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/langchain": new URL(
+          "./packages/langchain/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/openai": new URL(
+          "./packages/openai/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/vercel-ai-sdk": new URL(
+          "./packages/vercel-ai-sdk/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+        "@proofstate/core": new URL(
+          "./packages/core/dist/index.mjs",
+          import.meta.url,
+        ).pathname,
+      },
+    },
+  },
+]);

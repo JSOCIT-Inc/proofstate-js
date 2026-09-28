@@ -1,0 +1,2306 @@
+/**
+ * Comprehensive tests for propagateAttributes functionality.
+ *
+ * This module tests the propagateAttributes function that allows setting
+ * trace-level attributes (userId, sessionId, environment, version, metadata) that
+ * automatically propagate to all child spans within the context.
+ */
+
+import { TextPromptClient } from "@proofstate/client";
+import {
+  ProofStateOtelContextKeys,
+  ProofStateOtelSpanAttributes,
+  getPropagatedAttributesFromContext,
+} from "@proofstate/core";
+import { propagateAttributes, startObservation } from "@proofstate/tracing";
+import {
+  context as otelContext,
+  trace as otelTrace,
+  propagation,
+  ROOT_CONTEXT,
+} from "@opentelemetry/api";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+
+import {
+  setupTestEnvironment,
+  teardownTestEnvironment,
+  waitForSpanExport,
+  type TestEnvironment,
+} from "./helpers/testSetup.js";
+
+describe("propagateAttributes", () => {
+  let testEnv: TestEnvironment;
+
+  beforeEach(async () => {
+    testEnv = await setupTestEnvironment();
+  });
+
+  afterEach(async () => {
+    await teardownTestEnvironment(testEnv);
+  });
+
+  describe("Basic Propagation", () => {
+    it("should propagate userId to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: "user_123" }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation("child-2");
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(
+        child1?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        child2?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+    });
+
+    it("should propagate sessionId to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ sessionId: "session_abc" }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation("child-2");
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(
+        child1?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+      expect(
+        child2?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+    });
+
+    it("should propagate version to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ version: "v1.2.3" }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation("child-2");
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(child1?.attributes[ProofStateOtelSpanAttributes.VERSION]).toBe(
+        "v1.2.3",
+      );
+      expect(child2?.attributes[ProofStateOtelSpanAttributes.VERSION]).toBe(
+        "v1.2.3",
+      );
+    });
+
+    it("should propagate traceName to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ traceName: "my-trace-name" }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation("child-2");
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(child1?.attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        "my-trace-name",
+      );
+      expect(child2?.attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        "my-trace-name",
+      );
+    });
+
+    it("should propagate metadata to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            metadata: { experiment: "variant_a", version: "1.0" },
+          },
+          () => {
+            const child1 = startObservation("child-1");
+            child1.end();
+
+            const child2 = startObservation("child-2");
+            child2.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(
+        child1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.experiment`
+        ],
+      ).toBe("variant_a");
+      expect(
+        child1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.version`
+        ],
+      ).toBe("1.0");
+      expect(
+        child2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.experiment`
+        ],
+      ).toBe("variant_a");
+      expect(
+        child2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.version`
+        ],
+      ).toBe("1.0");
+    });
+
+    it("should propagate all attributes together", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "user_123",
+            sessionId: "session_abc",
+            version: "v2.0.0",
+            metadata: { experiment: "test", env: "prod" },
+          },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+      expect(child?.attributes[ProofStateOtelSpanAttributes.VERSION]).toBe(
+        "v2.0.0",
+      );
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.experiment`
+        ],
+      ).toBe("test");
+      expect(
+        child?.attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.env`],
+      ).toBe("prod");
+    });
+
+    it("should maintain return value", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      const returnValue = await propagateAttributes(
+        { userId: "user_123" },
+        async () => {
+          return await tracer.startActiveSpan("parent", async (parentSpan) => {
+            const child1 = startObservation("child-1");
+            child1.end();
+
+            const child2 = startObservation("child-2");
+            child2.end();
+            parentSpan.end();
+
+            return "hello";
+          });
+        },
+      );
+
+      expect(returnValue).toBe("hello");
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(
+        child1?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        child2?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+    });
+
+    it("should propagate all attributes together (async)", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        await propagateAttributes(
+          {
+            userId: "user_123",
+            sessionId: "session_abc",
+            metadata: { experiment: "test", env: "prod" },
+          },
+          async () => {
+            await new Promise((resolve) => setTimeout(resolve));
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.experiment`
+        ],
+      ).toBe("test");
+      expect(
+        child?.attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.env`],
+      ).toBe("prod");
+    });
+  });
+
+  describe("Environment Propagation", () => {
+    it("should propagate environment as a first-class attribute", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ environment: "staging" }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const parent = spans.find((s) => s.name === "parent");
+      const child = spans.find((s) => s.name === "child");
+
+      expect(parent?.attributes[ProofStateOtelSpanAttributes.ENVIRONMENT]).toBe(
+        "staging",
+      );
+      expect(child?.attributes[ProofStateOtelSpanAttributes.ENVIRONMENT]).toBe(
+        "staging",
+      );
+    });
+
+    it("should override the processor default and restore nested scopes", async () => {
+      await teardownTestEnvironment(testEnv);
+      testEnv = await setupTestEnvironment({
+        spanProcessorConfig: { environment: "default" },
+      });
+
+      const before = startObservation("before");
+      before.end();
+
+      propagateAttributes({ environment: "outer", asBaggage: true }, () => {
+        const outer1 = startObservation("outer-1");
+        outer1.end();
+
+        expect(
+          propagation
+            .getBaggage(otelContext.active())
+            ?.getEntry("proofstate_environment")?.value,
+        ).toBe("outer");
+
+        propagateAttributes({ environment: "inner", asBaggage: true }, () => {
+          expect(
+            propagation
+              .getBaggage(otelContext.active())
+              ?.getEntry("proofstate_environment")?.value,
+          ).toBe("inner");
+
+          const inner = startObservation("inner");
+          inner.end();
+        });
+
+        expect(
+          propagation
+            .getBaggage(otelContext.active())
+            ?.getEntry("proofstate_environment")?.value,
+        ).toBe("outer");
+
+        const outer2 = startObservation("outer-2");
+        outer2.end();
+      });
+
+      const after = startObservation("after");
+      after.end();
+
+      await waitForSpanExport(testEnv.mockExporter, 5);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const getEnvironment = (name: string) =>
+        spans.find((span) => span.name === name)?.attributes[
+          ProofStateOtelSpanAttributes.ENVIRONMENT
+        ];
+
+      expect(getEnvironment("before")).toBe("default");
+      expect(getEnvironment("outer-1")).toBe("outer");
+      expect(getEnvironment("inner")).toBe("inner");
+      expect(getEnvironment("outer-2")).toBe("outer");
+      expect(getEnvironment("after")).toBe("default");
+    });
+
+    it.each(["", "Production", "prod.eu", "proofstate-prod", "x".repeat(41)])(
+      "should drop invalid environment %j",
+      async (environment) => {
+        propagateAttributes({ environment }, () => {
+          const child = startObservation(`child-${environment}`);
+          child.end();
+        });
+
+        await waitForSpanExport(testEnv.mockExporter, 1);
+        const [child] = testEnv.mockExporter.exportedSpans;
+
+        expect(
+          child.attributes[ProofStateOtelSpanAttributes.ENVIRONMENT],
+        ).toBeUndefined();
+      },
+    );
+
+    it("should drop a non-string environment", async () => {
+      propagateAttributes({ environment: 123 as unknown as string }, () => {
+        const child = startObservation("child");
+        child.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 1);
+      const [child] = testEnv.mockExporter.exportedSpans;
+
+      expect(
+        child.attributes[ProofStateOtelSpanAttributes.ENVIRONMENT],
+      ).toBeUndefined();
+    });
+
+    it("should accept a 40-character environment", async () => {
+      const environment = "e".repeat(40);
+
+      propagateAttributes({ environment }, () => {
+        const child = startObservation("child");
+        child.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 1);
+      const [child] = testEnv.mockExporter.exportedSpans;
+
+      expect(child.attributes[ProofStateOtelSpanAttributes.ENVIRONMENT]).toBe(
+        environment,
+      );
+    });
+  });
+
+  describe("Tags Propagation", () => {
+    it("should propagate tags to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["production", "experiment-a"] }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation("child-2");
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      expect(
+        child1?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["production", "experiment-a"]);
+      expect(
+        child2?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["production", "experiment-a"]);
+    });
+
+    it("should merge tags from multiple propagateAttributes calls", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["tag1", "tag2"] }, () => {
+          propagateAttributes({ tags: ["tag3", "tag4"] }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Child should have all four tags merged
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["tag1", "tag2", "tag3", "tag4"]));
+      expect(
+        (child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS] as string[])
+          ?.length,
+      ).toBe(4);
+    });
+
+    it("should deduplicate tags when merging", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["tag1", "tag2"] }, () => {
+          propagateAttributes({ tags: ["tag2", "tag3"] }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Should have unique tags only: tag1, tag2, tag3
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["tag1", "tag2", "tag3"]));
+      expect(
+        (child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS] as string[])
+          ?.length,
+      ).toBe(3);
+    });
+
+    it("should merge tags across nested contexts", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["outer", "shared"] }, () => {
+          const spanOuter1 = startObservation("span-outer-1");
+          spanOuter1.end();
+
+          propagateAttributes({ tags: ["inner", "shared"] }, () => {
+            const spanInner = startObservation("span-inner");
+            spanInner.end();
+          });
+
+          const spanOuter2 = startObservation("span-outer-2");
+          spanOuter2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 4);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const spanOuter1 = spans.find((s) => s.name === "span-outer-1");
+      const spanInner = spans.find((s) => s.name === "span-inner");
+      const spanOuter2 = spans.find((s) => s.name === "span-outer-2");
+
+      // spanOuter1: ["outer", "shared"]
+      expect(
+        spanOuter1?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["outer", "shared"]));
+      expect(
+        (
+          spanOuter1?.attributes[
+            ProofStateOtelSpanAttributes.TRACE_TAGS
+          ] as string[]
+        )?.length,
+      ).toBe(2);
+
+      // spanInner: ["outer", "shared", "inner"] - "shared" deduplicated
+      expect(
+        spanInner?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["outer", "shared", "inner"]));
+      expect(
+        (
+          spanInner?.attributes[
+            ProofStateOtelSpanAttributes.TRACE_TAGS
+          ] as string[]
+        )?.length,
+      ).toBe(3);
+
+      // spanOuter2: ["outer", "shared"] - restored to outer context
+      expect(
+        spanOuter2?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["outer", "shared"]));
+      expect(
+        (
+          spanOuter2?.attributes[
+            ProofStateOtelSpanAttributes.TRACE_TAGS
+          ] as string[]
+        )?.length,
+      ).toBe(2);
+    });
+
+    it("should handle empty tags array", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["tag1"] }, () => {
+          propagateAttributes({ tags: [] }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Should still have tag1 from outer context
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["tag1"]);
+    });
+
+    it("should propagate tags in baggage mode", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { tags: ["tag1", "tag2", "tag3"], asBaggage: true },
+          () => {
+            const currentContext = otelContext.active();
+            const baggage = propagation.getBaggage(currentContext);
+
+            expect(baggage).toBeDefined();
+            const entries = Array.from(baggage!.getAllEntries());
+            const tagsEntry = entries.find(
+              ([key]) => key === "proofstate_tags",
+            );
+
+            expect(tagsEntry).toBeDefined();
+            // Tags should be comma-separated in baggage
+            expect(tagsEntry?.[1].value).toBe("tag1,tag2,tag3");
+
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["tag1", "tag2", "tag3"]);
+    });
+
+    it("should merge tags in baggage mode", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["tag1"], asBaggage: true }, () => {
+          propagateAttributes({ tags: ["tag2"], asBaggage: true }, () => {
+            const currentContext = otelContext.active();
+            const baggage = propagation.getBaggage(currentContext);
+
+            expect(baggage).toBeDefined();
+            const entries = Array.from(baggage!.getAllEntries());
+            const tagsEntry = entries.find(
+              ([key]) => key === "proofstate_tags",
+            );
+
+            expect(tagsEntry).toBeDefined();
+            // Merged tags should be comma-separated
+            expect(tagsEntry?.[1].value).toBe("tag1,tag2");
+
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(expect.arrayContaining(["tag1", "tag2"]));
+    });
+
+    it("should drop tags over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longTag = "x".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ tags: ["valid-tag", longTag] }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["valid-tag"]);
+    });
+
+    it("should propagate tags with other attributes", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "user123",
+            sessionId: "session456",
+            tags: ["production", "test"],
+            metadata: { env: "prod" },
+          },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user123");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session456");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_TAGS],
+      ).toEqual(["production", "test"]);
+      expect(
+        child?.attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.env`],
+      ).toBe("prod");
+    });
+  });
+
+  describe("Metadata Merging", () => {
+    it("should merge metadata from multiple propagateAttributes calls", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { key1: "value1" } }, () => {
+          propagateAttributes({ metadata: { key2: "value2" } }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Child should have both key1 and key2
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`
+        ],
+      ).toBe("value2");
+    });
+
+    it("should allow metadata values to be overwritten by subsequent calls", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { key1: "value1" } }, () => {
+          propagateAttributes({ metadata: { key1: "value2" } }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Newer value should override
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value2");
+    });
+
+    it("should preserve existing metadata when adding new keys", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { existing: "value" } }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          propagateAttributes({ metadata: { new: "value2" } }, () => {
+            const child2 = startObservation("child-2");
+            child2.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child1 = spans.find((s) => s.name === "child-1");
+      const child2 = spans.find((s) => s.name === "child-2");
+
+      // child1 should only have "existing"
+      expect(
+        child1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.existing`
+        ],
+      ).toBe("value");
+      expect(
+        child1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.new`
+        ],
+      ).toBeUndefined();
+
+      // child2 should have both "existing" and "new"
+      expect(
+        child2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.existing`
+        ],
+      ).toBe("value");
+      expect(
+        child2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.new`
+        ],
+      ).toBe("value2");
+    });
+
+    it("should merge metadata across nested contexts", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { metadata: { level: "outer", shared: "outer" } },
+          () => {
+            const spanOuter1 = startObservation("span-outer-1");
+            spanOuter1.end();
+
+            propagateAttributes(
+              { metadata: { shared: "inner", extra: "inner" } },
+              () => {
+                const spanInner = startObservation("span-inner");
+                spanInner.end();
+              },
+            );
+
+            // Back to outer context
+            const spanOuter2 = startObservation("span-outer-2");
+            spanOuter2.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 4);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const spanOuter1 = spans.find((s) => s.name === "span-outer-1");
+      const spanInner = spans.find((s) => s.name === "span-inner");
+      const spanOuter2 = spans.find((s) => s.name === "span-outer-2");
+
+      // spanOuter1: {level: "outer", shared: "outer"}
+      expect(
+        spanOuter1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.level`
+        ],
+      ).toBe("outer");
+      expect(
+        spanOuter1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.shared`
+        ],
+      ).toBe("outer");
+      expect(
+        spanOuter1?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.extra`
+        ],
+      ).toBeUndefined();
+
+      // spanInner: {level: "outer", shared: "inner", extra: "inner"}
+      expect(
+        spanInner?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.level`
+        ],
+      ).toBe("outer");
+      expect(
+        spanInner?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.shared`
+        ],
+      ).toBe("inner");
+      expect(
+        spanInner?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.extra`
+        ],
+      ).toBe("inner");
+
+      // spanOuter2: {level: "outer", shared: "outer"} (restored)
+      expect(
+        spanOuter2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.level`
+        ],
+      ).toBe("outer");
+      expect(
+        spanOuter2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.shared`
+        ],
+      ).toBe("outer");
+      expect(
+        spanOuter2?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.extra`
+        ],
+      ).toBeUndefined();
+    });
+
+    it("should merge metadata from multiple sequential calls in same context", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { key1: "value1" } }, () => {
+          propagateAttributes({ metadata: { key2: "value2" } }, () => {
+            propagateAttributes({ metadata: { key3: "value3" } }, () => {
+              const child = startObservation("child");
+              child.end();
+            });
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // All three keys should be present
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`
+        ],
+      ).toBe("value2");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key3`
+        ],
+      ).toBe("value3");
+    });
+
+    it("should handle empty metadata object in merge", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { key1: "value1" } }, () => {
+          propagateAttributes({ metadata: {} }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // key1 should still be present
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+    });
+
+    it("should handle undefined metadata in subsequent calls", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ metadata: { key1: "value1" } }, () => {
+          propagateAttributes({ userId: "user123" }, () => {
+            const child = startObservation("child");
+            child.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // Both metadata and userId should be present
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user123");
+    });
+
+    it("should merge metadata after some keys were dropped due to validation", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            metadata: { valid: "ok", invalid: "x".repeat(201) },
+          },
+          () => {
+            propagateAttributes({ metadata: { additional: "value" } }, () => {
+              const child = startObservation("child");
+              child.end();
+            });
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // valid and additional should be present, invalid should be dropped
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.valid`
+        ],
+      ).toBe("ok");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.additional`
+        ],
+      ).toBe("value");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.invalid`
+        ],
+      ).toBeUndefined();
+    });
+
+    it("should merge metadata while updating other attributes", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { userId: "user1", metadata: { key1: "value1" } },
+          () => {
+            propagateAttributes(
+              { userId: "user2", metadata: { key2: "value2" } },
+              () => {
+                const child = startObservation("child");
+                child.end();
+              },
+            );
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // userId should be user2 (overwritten), both metadata keys should be present
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user2");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`
+        ],
+      ).toBe("value2");
+    });
+
+    it("should merge metadata when only metadata is being updated", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "user1",
+            sessionId: "session1",
+            metadata: { key1: "value1" },
+          },
+          () => {
+            propagateAttributes({ metadata: { key2: "value2" } }, () => {
+              const child = startObservation("child");
+              child.end();
+            });
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      // All attributes should be present with merged metadata
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user1");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`
+        ],
+      ).toBe("value2");
+    });
+  });
+
+  describe("Validation", () => {
+    it("should drop userId over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longUserId = "x".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: longUserId }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBeUndefined();
+    });
+
+    it("should accept userId exactly 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const userId200 = "x".repeat(200);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: userId200 }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe(userId200);
+    });
+
+    it("should drop sessionId over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longSessionId = "y".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ sessionId: longSessionId }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBeUndefined();
+    });
+
+    it("should drop version over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longVersion = "v".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ version: longVersion }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.VERSION],
+      ).toBeUndefined();
+    });
+
+    it("should accept version exactly 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const version200 = "v".repeat(200);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ version: version200 }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(child?.attributes[ProofStateOtelSpanAttributes.VERSION]).toBe(
+        version200,
+      );
+    });
+
+    it("should drop traceName over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longTraceName = "t".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ traceName: longTraceName }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_NAME],
+      ).toBeUndefined();
+    });
+
+    it("should accept traceName exactly 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const traceName200 = "t".repeat(200);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ traceName: traceName200 }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(child?.attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        traceName200,
+      );
+    });
+
+    it("should drop metadata values over 200 characters", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const longValue = "z".repeat(201);
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            metadata: { key: longValue },
+          },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.key`],
+      ).toBeUndefined();
+    });
+
+    it("should drop non-string userId", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: 12345 as any }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBeUndefined();
+    });
+
+    it("should keep valid metadata and drop invalid", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            metadata: {
+              valid_key: "valid_value",
+              invalid_key: "x".repeat(201),
+              another_valid: "ok",
+            },
+          },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.valid_key`
+        ],
+      ).toBe("valid_value");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.another_valid`
+        ],
+      ).toBe("ok");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.invalid_key`
+        ],
+      ).toBeUndefined();
+    });
+  });
+
+  describe("Baggage Propagation", () => {
+    it("should merge metadata in baggage mode", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { metadata: { key1: "value1" }, asBaggage: true },
+          () => {
+            propagateAttributes(
+              { metadata: { key2: "value2" }, asBaggage: true },
+              () => {
+                const currentContext = otelContext.active();
+                const baggage = propagation.getBaggage(currentContext);
+
+                expect(baggage).toBeDefined();
+                const entries = Array.from(baggage!.getAllEntries());
+                const baggageKeys = entries.map(([key]) => key);
+
+                // Both metadata keys should be in baggage
+                expect(baggageKeys).toContain("proofstate_metadata_key1");
+                expect(baggageKeys).toContain("proofstate_metadata_key2");
+
+                const key1Entry = entries.find(
+                  ([key]) => key === "proofstate_metadata_key1",
+                );
+                expect(key1Entry?.[1].value).toBe("value1");
+
+                const key2Entry = entries.find(
+                  ([key]) => key === "proofstate_metadata_key2",
+                );
+                expect(key2Entry?.[1].value).toBe("value2");
+
+                // Child span should also have both metadata keys
+                const child = startObservation("child");
+                child.end();
+              },
+            );
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`
+        ],
+      ).toBe("value1");
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`
+        ],
+      ).toBe("value2");
+    });
+
+    it("should set baggage when asBaggage=true", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "user_123",
+            sessionId: "session_abc",
+            version: "v2.0",
+            traceName: "my-trace",
+            metadata: { env: "test", region: "us-east" },
+            asBaggage: true,
+          },
+          () => {
+            // Get current context and inspect baggage
+            const currentContext = otelContext.active();
+            const baggage = propagation.getBaggage(currentContext);
+
+            expect(baggage).toBeDefined();
+            const entries = Array.from(baggage!.getAllEntries());
+
+            // Check baggage keys exist
+            const baggageKeys = entries.map(([key]) => key);
+            expect(baggageKeys).toContain("proofstate_user_id");
+            expect(baggageKeys).toContain("proofstate_session_id");
+            expect(baggageKeys).toContain("proofstate_version");
+            expect(baggageKeys).toContain("proofstate_trace_name");
+            expect(baggageKeys).toContain("proofstate_metadata_env");
+            expect(baggageKeys).toContain("proofstate_metadata_region");
+
+            // Check baggage values
+            const userIdEntry = entries.find(
+              ([key]) => key === "proofstate_user_id",
+            );
+            expect(userIdEntry?.[1].value).toBe("user_123");
+
+            const sessionIdEntry = entries.find(
+              ([key]) => key === "proofstate_session_id",
+            );
+            expect(sessionIdEntry?.[1].value).toBe("session_abc");
+
+            const versionEntry = entries.find(
+              ([key]) => key === "proofstate_version",
+            );
+            expect(versionEntry?.[1].value).toBe("v2.0");
+
+            const traceNameEntry = entries.find(
+              ([key]) => key === "proofstate_trace_name",
+            );
+            expect(traceNameEntry?.[1].value).toBe("my-trace");
+
+            const envEntry = entries.find(
+              ([key]) => key === "proofstate_metadata_env",
+            );
+            expect(envEntry?.[1].value).toBe("test");
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 1);
+    });
+
+    it("should propagate attributes from baggage to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "baggage_user",
+            sessionId: "baggage_session",
+            version: "v1.0-baggage",
+            traceName: "baggage-trace",
+            metadata: { source: "baggage" },
+            asBaggage: true,
+          },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("baggage_user");
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("baggage_session");
+      expect(child?.attributes[ProofStateOtelSpanAttributes.VERSION]).toBe(
+        "v1.0-baggage",
+      );
+      expect(child?.attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        "baggage-trace",
+      );
+      expect(
+        child?.attributes[
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.source`
+        ],
+      ).toBe("baggage");
+    });
+
+    it("should not set baggage when asBaggage=false (default)", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          {
+            userId: "user_123",
+            sessionId: "session_abc",
+          },
+          () => {
+            const currentContext = otelContext.active();
+            const baggage = propagation.getBaggage(currentContext);
+
+            expect(baggage).toBeUndefined();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 1);
+    });
+  });
+
+  describe("Nesting and Context Isolation", () => {
+    it("should allow nested contexts with different values", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: "user1" }, () => {
+          const span1 = startObservation("span-1");
+          span1.end();
+
+          propagateAttributes({ userId: "user2" }, () => {
+            const span2 = startObservation("span-2");
+            span2.end();
+          });
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const span1 = spans.find((s) => s.name === "span-1");
+      const span2 = spans.find((s) => s.name === "span-2");
+
+      expect(
+        span1?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user1");
+      expect(
+        span2?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user2");
+    });
+
+    it("should restore outer context after inner context exits", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ userId: "user1" }, () => {
+          const span1 = startObservation("span-1");
+          span1.end();
+
+          propagateAttributes({ userId: "user2" }, () => {
+            const span2 = startObservation("span-2");
+            span2.end();
+          });
+
+          // Back to outer context
+          const span3 = startObservation("span-3");
+          span3.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 4);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const span1 = spans.find((s) => s.name === "span-1");
+      const span2 = spans.find((s) => s.name === "span-2");
+      const span3 = spans.find((s) => s.name === "span-3");
+
+      expect(
+        span1?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user1");
+      expect(
+        span2?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user2");
+      expect(
+        span3?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user1");
+    });
+
+    it("should not propagate to spans outside context", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        // Span before propagation
+        const beforeSpan = startObservation("before");
+        beforeSpan.end();
+
+        propagateAttributes({ userId: "user_123" }, () => {
+          const insideSpan = startObservation("inside");
+          insideSpan.end();
+        });
+
+        // Span after propagation context exits
+        const afterSpan = startObservation("after");
+        afterSpan.end();
+
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 4);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const beforeSpan = spans.find((s) => s.name === "before");
+      const insideSpan = spans.find((s) => s.name === "inside");
+      const afterSpan = spans.find((s) => s.name === "after");
+
+      expect(
+        beforeSpan?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBeUndefined();
+      expect(
+        insideSpan?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        afterSpan?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBeUndefined();
+    });
+  });
+
+  describe("Prompt Propagation", () => {
+    const makePromptClient = (params?: {
+      name?: string;
+      version?: number;
+      isFallback?: boolean;
+    }) =>
+      new TextPromptClient(
+        {
+          name: params?.name ?? "test-prompt",
+          version: params?.version ?? 3,
+          prompt: "Make me laugh",
+          type: "text",
+          labels: [],
+          config: {},
+          tags: [],
+        },
+        params?.isFallback ?? false,
+      );
+
+    it("should propagate prompt client name and version to child spans", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const prompt = makePromptClient({ name: "test-prompt", version: 3 });
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ prompt }, () => {
+          const child1 = startObservation("child-1");
+          child1.end();
+
+          const child2 = startObservation(
+            "child-2",
+            {},
+            { asType: "generation" },
+          );
+          child2.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+
+      for (const name of ["child-1", "child-2"]) {
+        const child = spans.find((s) => s.name === name);
+
+        expect(
+          child?.attributes[
+            ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+          ],
+        ).toBe("test-prompt");
+        expect(
+          child?.attributes[
+            ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+          ],
+        ).toBe(3);
+      }
+    });
+
+    it("should support plain object prompt input", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { prompt: { name: "object-prompt", version: 7 } },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBe("object-prompt");
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(7);
+    });
+
+    it("should coerce digit-only string version to integer", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { prompt: { name: "prompt", version: "5" } },
+          () => {
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(5);
+    });
+
+    it("should not link fallback prompts", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const prompt = makePromptClient({ isFallback: true });
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ prompt }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBeUndefined();
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBeUndefined();
+    });
+
+    it("should drop prompt link when name is invalid", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ prompt: { name: "", version: 3 } }, () => {
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBeUndefined();
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBeUndefined();
+    });
+
+    it("should drop prompt link when version is invalid", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { prompt: { name: "prompt", version: "not-a-number" } },
+          () => {
+            const child1 = startObservation("child-1");
+            child1.end();
+          },
+        );
+
+        propagateAttributes(
+          { prompt: { name: "prompt", version: 1.5 } },
+          () => {
+            const child2 = startObservation("child-2");
+            child2.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+
+      for (const name of ["child-1", "child-2"]) {
+        const child = spans.find((s) => s.name === name);
+
+        expect(
+          child?.attributes[
+            ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+          ],
+        ).toBeUndefined();
+        expect(
+          child?.attributes[
+            ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+          ],
+        ).toBeUndefined();
+      }
+    });
+
+    it("should let an explicit observation prompt win over the propagated one", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const propagatedPrompt = makePromptClient({
+        name: "propagated-prompt",
+        version: 3,
+      });
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ prompt: propagatedPrompt }, () => {
+          const generation = startObservation(
+            "generation",
+            {
+              prompt: {
+                name: "explicit-prompt",
+                version: 10,
+                isFallback: false,
+              },
+            },
+            { asType: "generation" },
+          );
+          generation.end();
+
+          const child = startObservation("child");
+          child.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const generation = spans.find((s) => s.name === "generation");
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        generation?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("explicit-prompt");
+      expect(
+        generation?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(10);
+
+      // Sibling without explicit prompt still gets the propagated one
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBe("propagated-prompt");
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(3);
+    });
+
+    it("should let creation-time prompt attributes win over the propagated one", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+      const propagatedPrompt = makePromptClient({
+        name: "propagated-prompt",
+        version: 3,
+      });
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes({ prompt: propagatedPrompt }, () => {
+          // Simulates third-party instrumentations that pass attributes at
+          // span creation time (before the span processor's onStart)
+          const rawSpan = tracer.startSpan("raw-span", {
+            attributes: {
+              [ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME]:
+                "explicit-prompt",
+              [ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION]: 10,
+            },
+          });
+          rawSpan.end();
+        });
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const rawSpan = spans.find((s) => s.name === "raw-span");
+
+      expect(
+        rawSpan?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("explicit-prompt");
+      expect(
+        rawSpan?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(10);
+    });
+
+    it("should shadow outer prompt in nested contexts and restore on exit", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { prompt: { name: "outer-prompt", version: 1 } },
+          () => {
+            const spanOuter1 = startObservation("span-outer-1");
+            spanOuter1.end();
+
+            propagateAttributes(
+              { prompt: { name: "inner-prompt", version: 2 } },
+              () => {
+                const spanInner = startObservation("span-inner");
+                spanInner.end();
+              },
+            );
+
+            // Back to outer context
+            const spanOuter2 = startObservation("span-outer-2");
+            spanOuter2.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 4);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const spanOuter1 = spans.find((s) => s.name === "span-outer-1");
+      const spanInner = spans.find((s) => s.name === "span-inner");
+      const spanOuter2 = spans.find((s) => s.name === "span-outer-2");
+
+      expect(
+        spanOuter1?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("outer-prompt");
+      expect(
+        spanOuter1?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(1);
+
+      expect(
+        spanInner?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("inner-prompt");
+      expect(
+        spanInner?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(2);
+
+      expect(
+        spanOuter2?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("outer-prompt");
+      expect(
+        spanOuter2?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(1);
+    });
+
+    it("should compose with other propagated attributes", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { userId: "user_123", sessionId: "session_abc" },
+          () => {
+            propagateAttributes(
+              { prompt: { name: "test-prompt", version: 3 } },
+              () => {
+                const spanInner = startObservation("span-inner");
+                spanInner.end();
+              },
+            );
+
+            // After inner context exits, prompt is gone but outer attrs remain
+            const spanOuter = startObservation("span-outer");
+            spanOuter.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 3);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const spanInner = spans.find((s) => s.name === "span-inner");
+      const spanOuter = spans.find((s) => s.name === "span-outer");
+
+      expect(
+        spanInner?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        spanInner?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+      expect(
+        spanInner?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBe("test-prompt");
+      expect(
+        spanInner?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(3);
+
+      expect(
+        spanOuter?.attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID],
+      ).toBe("user_123");
+      expect(
+        spanOuter?.attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID],
+      ).toBe("session_abc");
+      expect(
+        spanOuter?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+        ],
+      ).toBeUndefined();
+      expect(
+        spanOuter?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBeUndefined();
+    });
+
+    it("should propagate prompt in baggage mode", async () => {
+      const tracer = otelTrace.getTracer("proofstate-sdk");
+
+      await tracer.startActiveSpan("parent", async (parentSpan) => {
+        propagateAttributes(
+          { prompt: { name: "test-prompt", version: 3 }, asBaggage: true },
+          () => {
+            const currentContext = otelContext.active();
+            const baggage = propagation.getBaggage(currentContext);
+
+            expect(baggage).toBeDefined();
+            const entries = Array.from(baggage!.getAllEntries());
+            const nameEntry = entries.find(
+              ([key]) => key === "proofstate_prompt_name",
+            );
+            const versionEntry = entries.find(
+              ([key]) => key === "proofstate_prompt_version",
+            );
+
+            expect(nameEntry?.[1].value).toBe("test-prompt");
+            // Baggage values are strings
+            expect(versionEntry?.[1].value).toBe("3");
+
+            const child = startObservation("child");
+            child.end();
+          },
+        );
+        parentSpan.end();
+      });
+
+      await waitForSpanExport(testEnv.mockExporter, 2);
+      const spans = testEnv.mockExporter.exportedSpans;
+      const child = spans.find((s) => s.name === "child");
+
+      expect(
+        child?.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBe("test-prompt");
+      // Version is restored to an integer when reading back from baggage
+      expect(
+        child?.attributes[
+          ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+        ],
+      ).toBe(3);
+    });
+  });
+
+  describe("getPropagatedAttributesFromContext", () => {
+    it("should read userId from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["userId"],
+        "test_user",
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID]).toBe(
+        "test_user",
+      );
+    });
+
+    it("should read sessionId from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["sessionId"],
+        "test_session",
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID]).toBe(
+        "test_session",
+      );
+    });
+
+    it("should read version from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["version"],
+        "v3.1.4",
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.VERSION]).toBe("v3.1.4");
+    });
+
+    it("should read traceName from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["traceName"],
+        "context-trace-name",
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        "context-trace-name",
+      );
+    });
+
+    it("should read environment from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["environment"],
+        "context-env",
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.ENVIRONMENT]).toBe(
+        "context-env",
+      );
+    });
+
+    it("should read metadata from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["metadata"],
+        {
+          key1: "value1",
+          key2: "value2",
+        },
+      );
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(
+        attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.key1`],
+      ).toBe("value1");
+      expect(
+        attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.key2`],
+      ).toBe("value2");
+    });
+
+    it("should read prompt from context", () => {
+      const context = ROOT_CONTEXT.setValue(
+        ProofStateOtelContextKeys["promptName"],
+        "context-prompt",
+      ).setValue(ProofStateOtelContextKeys["promptVersion"], 4);
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(
+        attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBe("context-prompt");
+      expect(
+        attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION],
+      ).toBe(4);
+    });
+
+    it("should restore integer prompt version from baggage", () => {
+      let baggage = propagation.createBaggage();
+      baggage = baggage.setEntry("proofstate_prompt_name", {
+        value: "baggage-prompt",
+      });
+      baggage = baggage.setEntry("proofstate_prompt_version", { value: "12" });
+
+      const context = propagation.setBaggage(ROOT_CONTEXT, baggage);
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(
+        attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME],
+      ).toBe("baggage-prompt");
+      expect(
+        attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION],
+      ).toBe(12);
+    });
+
+    it("should read attributes from baggage", () => {
+      let baggage = propagation.createBaggage();
+      baggage = baggage.setEntry("proofstate_user_id", {
+        value: "baggage_user",
+      });
+      baggage = baggage.setEntry("proofstate_session_id", {
+        value: "baggage_session",
+      });
+      baggage = baggage.setEntry("proofstate_version", { value: "v2.5.1" });
+      baggage = baggage.setEntry("proofstate_trace_name", {
+        value: "baggage-trace",
+      });
+      baggage = baggage.setEntry("proofstate_environment", {
+        value: "baggage-env",
+      });
+      baggage = baggage.setEntry("proofstate_metadata_env", { value: "prod" });
+
+      const context = propagation.setBaggage(ROOT_CONTEXT, baggage);
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_USER_ID]).toBe(
+        "baggage_user",
+      );
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_SESSION_ID]).toBe(
+        "baggage_session",
+      );
+      expect(attributes[ProofStateOtelSpanAttributes.VERSION]).toBe("v2.5.1");
+      expect(attributes[ProofStateOtelSpanAttributes.TRACE_NAME]).toBe(
+        "baggage-trace",
+      );
+      expect(attributes[ProofStateOtelSpanAttributes.ENVIRONMENT]).toBe(
+        "baggage-env",
+      );
+      expect(
+        attributes[`${ProofStateOtelSpanAttributes.TRACE_METADATA}.env`],
+      ).toBe("prod");
+    });
+
+    it("should drop invalid environment from baggage", () => {
+      const baggage = propagation
+        .createBaggage()
+        .setEntry("proofstate_environment", { value: "Production" });
+      const context = propagation.setBaggage(ROOT_CONTEXT, baggage);
+
+      const attributes = getPropagatedAttributesFromContext(context);
+
+      expect(
+        attributes[ProofStateOtelSpanAttributes.ENVIRONMENT],
+      ).toBeUndefined();
+    });
+
+    it("should return empty object for context with no propagated attributes", () => {
+      const attributes = getPropagatedAttributesFromContext(ROOT_CONTEXT);
+
+      expect(Object.keys(attributes)).toHaveLength(0);
+    });
+  });
+});

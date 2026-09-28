@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@proofstate/client": ["../packages/client/dist/index.d.ts"],
+      "@proofstate/core": ["../packages/core/src/index.ts"],
+      "@proofstate/tracing": ["../packages/tracing/src/index.ts"],
+      "@proofstate/otel": ["../packages/otel/src/index.ts"],
+      "@proofstate/langchain": ["../packages/langchain/src/index.ts"],
+      "@proofstate/openai": ["../packages/openai/src/index.ts"],
+      "@proofstate/vercel-ai-sdk": ["../packages/vercel-ai-sdk/src/index.ts"]
+    },
+    "types": ["vitest/globals", "@types/node"]
+  },
+  "include": ["**/*.ts", "**/*.js"],
+  "exclude": ["node_modules", "dist"]
+}

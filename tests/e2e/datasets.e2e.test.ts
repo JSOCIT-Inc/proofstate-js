@@ -1,0 +1,653 @@
+import { StringOutputParser } from "@langchain/core/output_parsers";
+import { PromptTemplate } from "@langchain/core/prompts";
+import { ChatOpenAI } from "@langchain/openai";
+import { ExperimentTask, ProofStateClient } from "@proofstate/client";
+import { startObservation } from "@proofstate/tracing";
+import { nanoid } from "nanoid";
+import { describe, it, expect, beforeEach } from "vitest";
+
+import { waitForServerIngestion } from "./helpers/serverSetup.js";
+
+describe("ProofState Datasets E2E", () => {
+  let proofstate: ProofStateClient;
+
+  beforeEach(async () => {
+    proofstate = new ProofStateClient();
+  });
+
+  describe("dataset and items", () => {
+    it("create and get dataset, name only", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      const getDataset = await proofstate.dataset.get(datasetName);
+      expect(getDataset).toMatchObject({
+        name: datasetName,
+      });
+    });
+
+    it("create and get dataset, name only, special character", async () => {
+      const datasetName = nanoid() + "+ 7?";
+      await proofstate.api.datasets.create({ name: datasetName });
+      const getDataset = await proofstate.dataset.get(datasetName);
+
+      expect(getDataset).toMatchObject({
+        name: datasetName,
+      });
+    });
+
+    it("create and get dataset, object", async () => {
+      const datasetName = nanoid();
+
+      await proofstate.api.datasets.create({
+        name: datasetName,
+        description: "test",
+        metadata: { test: "test" },
+      });
+
+      const getDataset = await proofstate.dataset.get(datasetName);
+
+      expect(getDataset).toMatchObject({
+        name: datasetName,
+        description: "test",
+        metadata: { test: "test" },
+      });
+    });
+
+    it("create and get dataset item", async () => {
+      const datasetNameRandom = nanoid();
+      await proofstate.api.datasets.create({
+        name: datasetNameRandom,
+        metadata: { test: "test" },
+      });
+
+      // Create a generation using the tracing SDK for linking
+      const generation = startObservation(
+        "test-observation",
+        {
+          input: "generation input",
+          model: "gpt-3.5-turbo",
+        },
+        { asType: "generation" },
+      );
+      generation.update({ output: "generation output" });
+      generation.end();
+
+      const item1 = await proofstate.api.datasetItems.create({
+        datasetName: datasetNameRandom,
+        input: "hello",
+        metadata: { test: "test" },
+      });
+
+      const item2 = await proofstate.api.datasetItems.create({
+        datasetName: datasetNameRandom,
+        input: [
+          {
+            role: "text",
+            text: "hello world",
+          },
+          {
+            role: "label",
+            text: "hello world",
+          },
+        ],
+        expectedOutput: {
+          text: "hello world",
+        },
+        metadata: { test: "test" },
+        sourceObservationId: generation.id,
+        sourceTraceId: generation.traceId,
+      });
+
+      const item3 = await proofstate.api.datasetItems.create({
+        datasetName: datasetNameRandom,
+        input: "prompt",
+        expectedOutput: "completion",
+      });
+
+      const getDataset = await proofstate.dataset.get(datasetNameRandom);
+      expect(getDataset).toMatchObject({
+        name: datasetNameRandom,
+        description: null,
+        metadata: { test: "test" },
+      });
+
+      // Verify items exist in dataset
+      expect(getDataset.items).toHaveLength(3);
+      expect(getDataset.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: item1.id,
+            input: "hello",
+            metadata: { test: "test" },
+          }),
+          expect.objectContaining({
+            id: item2.id,
+            sourceObservationId: generation.id,
+            sourceTraceId: generation.traceId,
+          }),
+          expect.objectContaining({
+            id: item3.id,
+            input: "prompt",
+            expectedOutput: "completion",
+          }),
+        ]),
+      );
+
+      const getDatasetItem = await proofstate.api.datasetItems.get(item1.id);
+      expect(getDatasetItem).toMatchObject({
+        id: item1.id,
+        input: "hello",
+        metadata: { test: "test" },
+      });
+    }, 10000);
+
+    it("create and get many dataset items to test pagination", async () => {
+      const datasetNameRandom = nanoid();
+      await proofstate.api.datasets.create({
+        name: datasetNameRandom,
+        metadata: { test: "test" },
+      });
+
+      // create 99 items
+      const createdItems = [];
+      const promises = [];
+      for (let i = 0; i < 99; i++) {
+        const promise = proofstate.api.datasetItems
+          .create({
+            datasetName: datasetNameRandom,
+            input: "prompt",
+            expectedOutput: "completion",
+            metadata: { test: "test" },
+          })
+          .then((item) => createdItems.push(item));
+        promises.push(promise);
+      }
+
+      await Promise.all(promises);
+
+      // default
+      const getDatasetDefault = await proofstate.dataset.get(datasetNameRandom);
+      expect(getDatasetDefault.items.length).toEqual(99);
+      expect(getDatasetDefault.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            input: "prompt",
+            expectedOutput: "completion",
+            metadata: { test: "test" },
+          }),
+        ]),
+      );
+
+      // Verify pagination by fetching in chunks (DatasetManager handles pagination internally)
+      const getDatasetChunk8 = await proofstate.dataset.get(datasetNameRandom, {
+        fetchItemsPageSize: 8,
+      });
+      expect(getDatasetChunk8.items.length).toEqual(99);
+
+      const getDatasetChunk11 = await proofstate.dataset.get(
+        datasetNameRandom,
+        {
+          fetchItemsPageSize: 11,
+        },
+      );
+      expect(getDatasetChunk11.items.length).toEqual(99);
+    }, 20000);
+
+    it("create, upsert and get dataset item", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      const createRes = await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: {
+          text: "hello world",
+        },
+        expectedOutput: {
+          text: "hello world",
+        },
+      });
+
+      const getRes = await proofstate.api.datasetItems.get(createRes.id);
+      expect(getRes).toMatchObject({
+        id: createRes.id,
+        input: { text: "hello world" },
+        expectedOutput: { text: "hello world" },
+      });
+
+      // Update the same item (upsert)
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        id: createRes.id,
+        input: {
+          text: "hello world2",
+        },
+        expectedOutput: {
+          text: "hello world2",
+        },
+        metadata: {
+          test: "test",
+        },
+        status: "ARCHIVED",
+      });
+
+      const getUpdateRes = await proofstate.api.datasetItems.get(createRes.id);
+      expect(getUpdateRes).toMatchObject({
+        id: createRes.id,
+        input: {
+          text: "hello world2",
+        },
+        expectedOutput: {
+          text: "hello world2",
+        },
+        metadata: {
+          test: "test",
+        },
+        status: "ARCHIVED",
+      });
+    }, 10000);
+
+    it("e2e dataset runs and linking", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "Hello trace",
+        expectedOutput: "Hello world",
+      });
+
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "Hello generation",
+        expectedOutput: "Hello world",
+      });
+
+      // Create trace and generation using the tracing SDK
+      const span = startObservation("test-trace-" + datasetName, {
+        input: "input",
+        output: "Hello world traced",
+      });
+
+      const generation = span.startObservation(
+        "test-generation-" + datasetName,
+        {
+          input: "input",
+          model: "test-model",
+        },
+        { asType: "generation" },
+      );
+      generation.update({ output: "Hello world generated" });
+      generation.end();
+      span.end();
+
+      const dataset = await proofstate.dataset.get(datasetName);
+      const runName = "test-run-" + datasetName;
+
+      // Link dataset items to observations using the new linking API
+      for (const item of dataset.items) {
+        if (item.input === "Hello trace") {
+          await item.link(span, runName);
+
+          // Add score to trace
+          proofstate.score.observation(span, {
+            name: "test-score-trace",
+            value: 0.5,
+          });
+        } else if (item.input === "Hello generation") {
+          await item.link({ otelSpan: generation.otelSpan }, runName, {
+            description: "test-run-description",
+            metadata: { test: "test" },
+          });
+
+          // Add score to generation
+          proofstate.score.observation(generation, {
+            name: "test-score-generation",
+            value: 0.5,
+          });
+        }
+      }
+
+      await waitForServerIngestion(2_000);
+
+      // Verify the dataset run was created
+      const targetRun = await proofstate.api.datasets.getRun(
+        datasetName,
+        runName,
+      );
+
+      expect(targetRun).toBeDefined();
+      expect(targetRun).toMatchObject({
+        name: runName,
+        datasetId: dataset.id,
+        // description and metadata from second link should be preserved
+        description: "test-run-description",
+        metadata: { test: "test" },
+      });
+
+      // Verify run items
+      expect(targetRun.datasetRunItems).toHaveLength(2);
+      expect(targetRun.datasetRunItems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            traceId: generation.traceId,
+            observationId: generation.id,
+          }),
+        ]),
+      );
+    }, 15000);
+
+    it("e2e multiple runs", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "Hello trace",
+        expectedOutput: "Hello world",
+      });
+
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "Hello generation",
+        expectedOutput: "Hello world",
+      });
+
+      // Create base trace and generation using tracing SDK
+      const span = startObservation("test-trace-" + datasetName, {
+        input: "input",
+        output: "Hello world traced",
+      });
+
+      const generation = span.startObservation(
+        "test-generation-" + datasetName,
+        {
+          input: "input",
+          model: "test-model",
+        },
+        { asType: "generation" },
+      );
+      generation.update({ output: "Hello world generated" });
+      generation.end();
+      span.end();
+
+      const dataset = await proofstate.dataset.get(datasetName);
+
+      // Create 9 different runs
+      for (let i = 0; i < 9; i++) {
+        const runName = `test-run-${datasetName}-${i}`;
+
+        // Link items to the run using the new API
+        for (const item of dataset.items) {
+          if (item.input === "Hello trace") {
+            await item.link(span, runName);
+            proofstate.score.observation(span, {
+              name: "test-score-trace",
+              value: 0.5,
+            });
+          } else if (item.input === "Hello generation") {
+            await item.link({ otelSpan: generation.otelSpan }, runName, {
+              description: "test-run-description",
+              metadata: { test: "test" },
+            });
+            proofstate.score.observation(generation, {
+              name: "test-score-generation",
+              value: 0.5,
+            });
+          }
+        }
+      }
+
+      // Get all runs
+      const getRuns = await proofstate.api.datasets.getRuns(datasetName);
+
+      expect(getRuns.data.length).toEqual(9);
+      expect(getRuns.data[0]).toMatchObject({
+        name: `test-run-${datasetName}-8`,
+        description: "test-run-description",
+        metadata: { test: "test" },
+        datasetName: datasetName,
+      });
+
+      // Test pagination
+      const getRunsQuery = await proofstate.api.datasets.getRuns(datasetName, {
+        limit: 2,
+        page: 1,
+      });
+
+      expect(getRunsQuery.data.length).toBeLessThanOrEqual(2);
+      expect(getRunsQuery.meta).toMatchObject({
+        limit: 2,
+        page: 1,
+      });
+      expect(getRunsQuery.meta.totalItems).toBeGreaterThanOrEqual(9);
+    }, 20000);
+
+    it("createDatasetItemHandler equivalent with LangChain", async () => {
+      // Create simple Langchain chain
+      const prompt = new PromptTemplate({
+        template:
+          "What is the capital of {country}? Give ONLY the name of the capital.",
+        inputVariables: ["country"],
+      });
+      const llm = new ChatOpenAI({
+        apiKey: process.env.OPENAI_API_KEY || "fake-key-for-testing",
+        model: "gpt-3.5-turbo",
+      });
+      const parser = new StringOutputParser();
+      const chain = prompt.pipe(llm).pipe(parser);
+
+      // Create a dataset
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      // Add two items to the dataset
+      await Promise.all([
+        proofstate.api.datasetItems.create({
+          datasetName: datasetName,
+          input: "Germany",
+          expectedOutput: "Berlin",
+        }),
+        proofstate.api.datasetItems.create({
+          datasetName: datasetName,
+          input: "France",
+          expectedOutput: "Paris",
+        }),
+      ]);
+
+      // Execute chain on dataset items
+      const dataset = await proofstate.dataset.get(datasetName);
+      const runName = "test-run-" + new Date().toISOString();
+      const runDescription = "test-run-description";
+      const runMetadata = { test: "test" };
+      const traceIds: string[] = [];
+
+      for (const item of dataset.items) {
+        // Create trace for this run using tracing SDK
+        const span = startObservation("langchain-execution", {
+          input: { country: item.input },
+          metadata: { chainType: "capital-lookup" },
+        });
+
+        traceIds.push(span.traceId);
+
+        try {
+          // Execute LangChain with tracing (simplified - in real implementation would use callbacks)
+          const result = await chain.invoke({ country: item.input });
+
+          // Update trace with result
+          span.update({ output: result });
+
+          // Link dataset item to trace using the new API
+          await item.link(span, runName, {
+            description: runDescription,
+            metadata: runMetadata,
+          });
+
+          // Add score
+          proofstate.score.observation(span, {
+            name: "test-score",
+            value: 0.5,
+          });
+        } catch (error) {
+          // Handle LLM errors gracefully - update trace with error
+          span.update({
+            output: { error: String(error) },
+            level: "ERROR",
+          });
+
+          // Still link the dataset item
+          await item.link(span, runName, {
+            description: runDescription,
+            metadata: runMetadata,
+          });
+        }
+
+        span.end();
+      }
+
+      await waitForServerIngestion(2_000);
+
+      // Verify that the dataset run was created correctly
+      const targetRun = await proofstate.api.datasets.getRun(
+        datasetName,
+        runName,
+      );
+
+      expect(targetRun).toBeDefined();
+      expect(targetRun).toMatchObject({
+        name: runName,
+        description: runDescription,
+        metadata: runMetadata,
+        datasetId: dataset.id,
+      });
+
+      expect(targetRun.datasetRunItems).toHaveLength(2);
+      expect(targetRun.datasetRunItems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            traceId: traceIds[0],
+          }),
+          expect.objectContaining({
+            traceId: traceIds[1],
+          }),
+        ]),
+      );
+    }, 25000);
+
+    it("get dataset with version parameter returns items at specific timestamp", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      // Create first item
+      const item1 = await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "first item",
+        expectedOutput: "first output",
+      });
+
+      // Create second item
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: "second item",
+        expectedOutput: "second output",
+      });
+
+      const versionDate = new Date(item1.createdAt);
+      const versionTimestamp = versionDate.toISOString();
+
+      // Get dataset at this version - should only have item1
+      const datasetAtVersion = await proofstate.dataset.get(datasetName, {
+        version: versionTimestamp,
+      });
+
+      // Should only have item1, not item2
+      expect(datasetAtVersion.items).toHaveLength(1);
+      expect(datasetAtVersion.items[0]).toMatchObject({
+        input: "first item",
+        expectedOutput: "first output",
+      });
+
+      // Get latest dataset (no version parameter) - should have both items
+      const datasetLatest = await proofstate.dataset.get(datasetName);
+      expect(datasetLatest.items).toHaveLength(2);
+    }, 30000);
+
+    it("run experiment with versioned dataset", async () => {
+      const datasetName = nanoid();
+      await proofstate.api.datasets.create({ name: datasetName });
+
+      // Create first item
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: { question: "What is 2+2?" },
+        expectedOutput: 4,
+      });
+
+      await waitForServerIngestion(3_000);
+
+      // Fetch dataset to get the actual server-assigned timestamp of item1
+      const datasetAfterItem1 = await proofstate.dataset.get(datasetName);
+      expect(datasetAfterItem1.items).toHaveLength(1);
+      const item1Id = datasetAfterItem1.items[0].id;
+      const item1CreatedAt = new Date(datasetAfterItem1.items[0].createdAt);
+
+      // Use a timestamp 1 second after item1's creation
+      const versionTimestamp = new Date(
+        item1CreatedAt.getTime() + 1000,
+      ).toISOString();
+
+      await waitForServerIngestion(3_000);
+
+      // Update item1 after the version timestamp (this should not affect versioned query)
+      await proofstate.api.datasetItems.create({
+        id: item1Id,
+        datasetName: datasetName,
+        input: { question: "What is 4+4?" },
+        expectedOutput: 8,
+      });
+
+      await waitForServerIngestion(3_000);
+
+      // Create second item (after version timestamp)
+      await proofstate.api.datasetItems.create({
+        datasetName: datasetName,
+        input: { question: "What is 3+3?" },
+        expectedOutput: 6,
+      });
+
+      await waitForServerIngestion(3_000);
+
+      // Get versioned dataset (should only have first item with ORIGINAL state)
+      const versionedDataset = await proofstate.dataset.get(datasetName, {
+        version: versionTimestamp,
+      });
+
+      expect(versionedDataset.items).toHaveLength(1);
+      expect(versionedDataset.version).toBe(versionTimestamp);
+      // Verify it returns the ORIGINAL version of item1 (before the update)
+      expect(versionedDataset.items[0].input).toEqual({
+        question: "What is 2+2?",
+      });
+      expect(versionedDataset.items[0].expectedOutput).toBe(4);
+      expect(versionedDataset.items[0].id).toBe(item1Id);
+
+      // Run a simple experiment on the versioned dataset
+      const simpleTask: ExperimentTask = async (params) => {
+        // Just return a static answer
+        return params.expectedOutput;
+      };
+
+      const result = await versionedDataset.runExperiment({
+        name: "Versioned Dataset Test",
+        description: "Testing experiment with versioned dataset",
+        task: simpleTask,
+      });
+
+      // Verify experiment ran successfully
+      expect(result.runName).toContain("Versioned Dataset Test");
+      expect(result.itemResults).toHaveLength(1); // Only one item in versioned dataset
+      expect(result.itemResults[0].output).toBe(4);
+    }, 40000);
+  });
+});

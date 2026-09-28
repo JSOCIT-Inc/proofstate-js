@@ -1,0 +1,584 @@
+import { Context } from "@opentelemetry/api";
+import { hrTimeToMilliseconds } from "@opentelemetry/core";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import {
+  Span,
+  BatchSpanProcessor,
+  SimpleSpanProcessor,
+  SpanExporter,
+  ReadableSpan,
+  SpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import {
+  Logger,
+  LogLevel,
+  getGlobalLogger,
+  ProofStateAPIClient,
+  PROOFSTATE_SDK_VERSION,
+  ProofStateOtelSpanAttributes,
+  getEnv,
+  removeTrailingSlashes,
+  base64Encode,
+  getProofStateTraceIdFromBaggage,
+  getPropagatedAttributesFromContext,
+} from "@proofstate/core";
+
+import { MediaService } from "./MediaService.js";
+import { isDefaultExportSpan } from "./span-filter.js";
+
+/**
+ * Function type for masking sensitive data in spans before export.
+ *
+ * @param params - Object containing the data to be masked
+ * @param params.data - The data that should be masked
+ * @returns The masked data, or a promise resolving to it
+ *
+ * @example
+ * ```typescript
+ * const maskFunction: MaskFunction = async ({ data }) => {
+ *   if (typeof data === 'string') {
+ *     return data.replace(/password=\w+/g, 'password=***');
+ *   }
+ *   return data;
+ * };
+ * ```
+ *
+ * @public
+ */
+export type MaskFunction = (params: { data: any }) => any | Promise<any>;
+
+/**
+ * Function type for determining whether a span should be exported to ProofState.
+ * If provided, this is treated as a full override of the default filtering behavior.
+ * ProofState may call this predicate both when a span starts for app-root classification
+ * and when the span ends for export filtering. Prefer side-effect-free predicates; the
+ * start-time call sees only attributes available at span creation, and end-time fields
+ * such as duration may not be populated yet.
+ *
+ * @param params - Object containing the span to evaluate
+ * @param params.otelSpan - The OpenTelemetry span to evaluate
+ * @returns `true` if the span should be exported, `false` otherwise
+ *
+ * @example
+ * ```typescript
+ * const shouldExportSpan: ShouldExportSpan = ({ otelSpan }) => {
+ *   // Only export spans that took longer than 100ms
+ *   return otelSpan.duration[0] * 1000 + otelSpan.duration[1] / 1000000 > 100;
+ * };
+ * ```
+ *
+ * @public
+ */
+export type ShouldExportSpan = (params: { otelSpan: ReadableSpan }) => boolean;
+
+/**
+ * Configuration parameters for the ProofStateSpanProcessor.
+ *
+ * @public
+ */
+export interface ProofStateSpanProcessorParams {
+  /**
+   * Custom OpenTelemetry span exporter. If not provided, a default OTLP exporter will be used.
+   */
+  exporter?: SpanExporter;
+
+  /**
+   * ProofState public API key. Can also be set via PROOFSTATE_PUBLIC_KEY environment variable.
+   */
+  publicKey?: string;
+
+  /**
+   * ProofState secret API key. Can also be set via PROOFSTATE_SECRET_KEY environment variable.
+   */
+  secretKey?: string;
+
+  /**
+   * ProofState instance base URL. Can also be set via PROOFSTATE_BASE_URL environment variable.
+   * @defaultValue "https://proofstate.ai"
+   */
+  baseUrl?: string;
+
+  /**
+   * Number of spans to batch before flushing. Can also be set via PROOFSTATE_FLUSH_AT environment variable.
+   */
+  flushAt?: number;
+
+  /**
+   * Flush interval in seconds. Can also be set via PROOFSTATE_FLUSH_INTERVAL environment variable.
+   */
+  flushInterval?: number;
+
+  /**
+   * Function to mask sensitive data in spans before export.
+   */
+  mask?: MaskFunction;
+
+  /**
+   * Function to determine whether a span should be exported to ProofState.
+   * If not provided, a smart default filter is applied to export ProofState spans,
+   * spans with `gen_ai.` attributes, and spans from known LLM instrumentors.
+   */
+  shouldExportSpan?: ShouldExportSpan;
+
+  /**
+   * Whether media detection and upload should be attempted by the processor.
+   * Can also be set via PROOFSTATE_MEDIA_UPLOAD_ENABLED environment variable.
+   *
+   * Set to `false` to keep base64 media payloads unchanged on exported spans.
+   *
+   * @defaultValue true
+   */
+  mediaUploadEnabled?: boolean;
+
+  /**
+   * Environment identifier for the traces. Can also be set via PROOFSTATE_TRACING_ENVIRONMENT environment variable.
+   */
+  environment?: string;
+
+  /**
+   * Release identifier for the traces. Can also be set via PROOFSTATE_RELEASE environment variable.
+   */
+  release?: string;
+
+  /**
+   * Request timeout in seconds. Can also be set via PROOFSTATE_TIMEOUT environment variable.
+   * @defaultValue 5
+   */
+  timeout?: number;
+
+  /**
+   * Additional HTTP headers to include with requests.
+   */
+  additionalHeaders?: Record<string, string>;
+  /**
+   * Span export mode to use.
+   *
+   * - **batched**: Recommended for production environments with long-running processes.
+   *   Spans are batched and exported in groups for optimal performance.
+   * - **immediate**: Recommended for short-lived environments such as serverless functions.
+   *   Spans are exported immediately to prevent data loss when the process terminates / is frozen.
+   *
+   * @defaultValue "batched"
+   */
+  exportMode?: "immediate" | "batched";
+}
+
+/**
+ * OpenTelemetry span processor for sending spans to ProofState.
+ *
+ * This processor extends the standard BatchSpanProcessor to provide:
+ * - Automatic batching and flushing of spans to ProofState
+ * - Media content extraction and upload from base64 data URIs
+ * - Data masking capabilities for sensitive information
+ * - Conditional span export based on custom logic
+ *   (or default smart filtering when no custom filter is provided)
+ * - Environment and release tagging
+ *
+ * @example
+ * ```typescript
+ * import { NodeSDK } from '@opentelemetry/sdk-node';
+ * import { ProofStateSpanProcessor } from '@proofstate/otel';
+ *
+ * const sdk = new NodeSDK({
+ *   spanProcessors: [
+ *     new ProofStateSpanProcessor({
+ *       publicKey: 'pk_...',
+ *       secretKey: 'sk_...',
+ *       baseUrl: 'https://proofstate.ai',
+ *       environment: 'production',
+ *       mask: ({ data }) => {
+ *         // Mask sensitive data
+ *         return data.replace(/api_key=\w+/g, 'api_key=***');
+ *       }
+ *     })
+ *   ]
+ * });
+ *
+ * sdk.start();
+ * ```
+ *
+ * @public
+ */
+export class ProofStateSpanProcessor implements SpanProcessor {
+  private pendingEndedSpans: Set<Promise<void>> = new Set();
+
+  private publicKey?: string;
+  private baseUrl?: string;
+  private environment?: string;
+  private release?: string;
+  private mask?: MaskFunction;
+  private shouldExportSpan: ShouldExportSpan;
+  private mediaUploadEnabled: boolean;
+  private apiClient: ProofStateAPIClient;
+  private processor: SpanProcessor;
+  private mediaService: MediaService;
+  private spanExportExpectationById: Map<string, boolean> = new Map();
+
+  /**
+   * Creates a new ProofStateSpanProcessor instance.
+   *
+   * @param params - Configuration parameters for the processor
+   *
+   * @example
+   * ```typescript
+   * const processor = new ProofStateSpanProcessor({
+   *   publicKey: 'pk_...',
+   *   secretKey: 'sk_...',
+   *   environment: 'staging',
+   *   flushAt: 10,
+   *   flushInterval: 2,
+   *   mask: ({ data }) => {
+   *     // Custom masking logic
+   *     return typeof data === 'string'
+   *       ? data.replace(/secret_\w+/g, 'secret_***')
+   *       : data;
+   *   },
+   *   shouldExportSpan: ({ otelSpan }) => {
+   *     // Full override of default filtering:
+   *     // export only spans from specific services
+   *     return otelSpan.name.startsWith("my-service");
+   *   }
+   * });
+   * ```
+   */
+  constructor(params?: ProofStateSpanProcessorParams) {
+    const logger = getGlobalLogger();
+
+    const publicKey = params?.publicKey ?? getEnv("PROOFSTATE_PUBLIC_KEY");
+    const secretKey = params?.secretKey ?? getEnv("PROOFSTATE_SECRET_KEY");
+    const baseUrl = removeTrailingSlashes(
+      params?.baseUrl ??
+        getEnv("PROOFSTATE_BASE_URL") ??
+        "https://proofstate.ai",
+    );
+
+    if (!params?.exporter && !publicKey) {
+      logger.warn(
+        "No exporter configured and no public key provided in constructor or as PROOFSTATE_PUBLIC_KEY env var. Span exports will fail.",
+      );
+    }
+    if (!params?.exporter && !secretKey) {
+      logger.warn(
+        "No exporter configured and no secret key provided in constructor or as PROOFSTATE_SECRET_KEY env var. Span exports will fail.",
+      );
+    }
+    const flushAt = params?.flushAt ?? getEnv("PROOFSTATE_FLUSH_AT");
+    const flushIntervalSeconds =
+      params?.flushInterval ?? getEnv("PROOFSTATE_FLUSH_INTERVAL");
+
+    const authHeaderValue = base64Encode(`${publicKey}:${secretKey}`);
+    const timeoutSeconds =
+      params?.timeout ?? Number(getEnv("PROOFSTATE_TIMEOUT") ?? 5);
+    const envMediaUploadEnabled = getEnv("PROOFSTATE_MEDIA_UPLOAD_ENABLED");
+    const mediaUploadEnabled =
+      params?.mediaUploadEnabled ??
+      (envMediaUploadEnabled
+        ? !["false", "0"].includes(envMediaUploadEnabled.toLowerCase())
+        : true);
+
+    const exporter =
+      params?.exporter ??
+      new OTLPTraceExporter({
+        url: `${baseUrl}/api/public/otel/v1/traces`,
+        headers: {
+          Authorization: `Basic ${authHeaderValue}`,
+          "x-proofstate-sdk-name": "proofstate-javascript",
+          "x-proofstate-sdk-version": PROOFSTATE_SDK_VERSION,
+          "x-proofstate-public-key": publicKey ?? "<missing>",
+          ...params?.additionalHeaders,
+          "x-proofstate-ingestion-version": "4",
+        },
+        timeoutMillis: timeoutSeconds * 1_000,
+      });
+
+    this.processor =
+      params?.exportMode === "immediate"
+        ? new SimpleSpanProcessor(exporter)
+        : new BatchSpanProcessor(exporter, {
+            maxExportBatchSize: flushAt ? Number(flushAt) : undefined,
+            scheduledDelayMillis: flushIntervalSeconds
+              ? Number(flushIntervalSeconds) * 1_000
+              : undefined,
+          });
+
+    this.publicKey = publicKey;
+    this.baseUrl = baseUrl;
+    this.environment =
+      params?.environment ?? getEnv("PROOFSTATE_TRACING_ENVIRONMENT");
+    this.release = params?.release ?? getEnv("PROOFSTATE_RELEASE");
+    this.mask = params?.mask;
+    this.shouldExportSpan =
+      params?.shouldExportSpan ??
+      (({ otelSpan }) => isDefaultExportSpan(otelSpan));
+    this.mediaUploadEnabled = mediaUploadEnabled;
+    this.apiClient = new ProofStateAPIClient({
+      baseUrl: this.baseUrl,
+      username: this.publicKey,
+      password: secretKey,
+      xProofStatePublicKey: this.publicKey,
+      xProofStateSdkVersion: PROOFSTATE_SDK_VERSION,
+      xProofStateSdkName: "proofstate-javascript",
+      environment: "", // noop as baseUrl is set
+      headers: params?.additionalHeaders,
+    });
+
+    this.mediaService = new MediaService({ apiClient: this.apiClient });
+
+    logger.debug("Initialized ProofStateSpanProcessor with params:", {
+      publicKey,
+      baseUrl,
+      environment: this.environment,
+      release: this.release,
+      timeoutSeconds,
+      flushAt,
+      flushIntervalSeconds,
+      mediaUploadEnabled,
+    });
+  }
+
+  private get logger(): Logger {
+    return getGlobalLogger();
+  }
+
+  /**
+   * Called when a span is started. Adds environment, release, and propagated attributes to the span.
+   *
+   * @param span - The span that was started
+   * @param parentContext - The parent context
+   *
+   * @override
+   */
+  public onStart(span: Span, parentContext: Context): void {
+    const propagatedAttributes =
+      getPropagatedAttributesFromContext(parentContext);
+
+    // An explicit prompt set at span creation takes precedence over a propagated one
+    if (
+      span.attributes[ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME] !=
+      null
+    ) {
+      delete propagatedAttributes[
+        ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME
+      ];
+      delete propagatedAttributes[
+        ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION
+      ];
+    }
+
+    // Set propagated attributes, environment and release attributes
+    span.setAttributes({
+      [ProofStateOtelSpanAttributes.ENVIRONMENT]: this.environment,
+      [ProofStateOtelSpanAttributes.RELEASE]: this.release,
+      ...propagatedAttributes,
+    });
+
+    try {
+      this.markAppRootCandidate(span, parentContext);
+    } catch (err) {
+      this.logger.debug(
+        "App-root start-time check failed. Span will not be marked as app root.",
+        { spanName: span.name },
+        err,
+      );
+    }
+
+    return this.processor.onStart(span, parentContext);
+  }
+
+  /**
+   * Called when a span ends. Processes the span for export to ProofState.
+   *
+   * This method:
+   * 1. Checks if the span should be exported using shouldExportSpan
+   *    (custom override or default smart filter)
+   * 2. Applies data masking to sensitive attributes
+   * 3. Handles media content extraction and upload
+   * 4. Logs span details in debug mode
+   * 5. Passes the span to the parent processor for export
+   *
+   * @param span - The span that ended
+   *
+   * @override
+   */
+  public onEnd(span: ReadableSpan): void {
+    this.spanExportExpectationById.delete(span.spanContext().spanId);
+
+    const processEndedSpanPromise = this.processEndedSpan(span).catch((err) => {
+      this.logger.error(err);
+    });
+
+    // Enqueue this export to the pending list so it can be flushed by the user.
+    this.pendingEndedSpans.add(processEndedSpanPromise);
+
+    void processEndedSpanPromise.finally(() =>
+      this.pendingEndedSpans.delete(processEndedSpanPromise),
+    );
+  }
+
+  private async flush(): Promise<void> {
+    await Promise.all(Array.from(this.pendingEndedSpans));
+    await this.mediaService.flush();
+  }
+
+  /**
+   * Forces an immediate flush of all pending spans and media uploads.
+   *
+   * @returns Promise that resolves when all pending operations are complete
+   *
+   * @override
+   */
+  public async forceFlush(): Promise<void> {
+    await this.flush();
+
+    return this.processor.forceFlush();
+  }
+
+  /**
+   * Gracefully shuts down the processor, ensuring all pending operations are completed.
+   *
+   * @returns Promise that resolves when shutdown is complete
+   *
+   * @override
+   */
+  public async shutdown(): Promise<void> {
+    await this.flush();
+
+    return this.processor.shutdown();
+  }
+
+  private async processEndedSpan(span: ReadableSpan) {
+    try {
+      if (this.shouldExportSpan({ otelSpan: span }) === false) {
+        this.logger.debug("Dropped span due to shouldExportSpan filter.", {
+          spanName: span.name,
+          instrumentationScope: span.instrumentationScope.name,
+        });
+
+        return;
+      }
+    } catch (err) {
+      this.logger.error(
+        "shouldExportSpan failed with error. Dropping span.",
+        {
+          spanName: span.name,
+          instrumentationScope: span.instrumentationScope.name,
+        },
+        err,
+      );
+
+      return;
+    }
+
+    await this.applyMaskInPlace(span);
+
+    if (this.mediaUploadEnabled) {
+      await this.mediaService.process(span);
+    }
+
+    if (this.logger.isLevelEnabled(LogLevel.DEBUG)) {
+      this.logger.debug(
+        `Processed span:\n${JSON.stringify(
+          {
+            name: span.name,
+            traceId: span.spanContext().traceId,
+            spanId: span.spanContext().spanId,
+            parentSpanId: span.parentSpanContext?.spanId ?? null,
+            attributes: span.attributes,
+            startTime: new Date(hrTimeToMilliseconds(span.startTime)),
+            endTime: new Date(hrTimeToMilliseconds(span.endTime)),
+            durationMs: hrTimeToMilliseconds(span.duration),
+            kind: span.kind,
+            status: span.status,
+            resource: span.resource.attributes,
+            instrumentationScope: span.instrumentationScope,
+          },
+          null,
+          2,
+        )}`,
+      );
+    }
+
+    this.processor.onEnd(span);
+  }
+
+  private markAppRootCandidate(span: Span, parentContext: Context): void {
+    const traceId = span.spanContext().traceId;
+    const spanId = span.spanContext().spanId;
+    const parentSpanId = span.parentSpanContext?.spanId;
+
+    const expectedExportedAtStart = this.isExpectedExportedAtStart(span);
+    const propagatedClaim = getProofStateTraceIdFromBaggage(parentContext);
+
+    const isParentExpectedExported =
+      parentSpanId !== undefined
+        ? this.spanExportExpectationById.get(parentSpanId) === true
+        : false;
+    const suppressedByParentClaim = propagatedClaim === traceId;
+
+    this.spanExportExpectationById.set(spanId, expectedExportedAtStart);
+
+    const markAppRoot =
+      expectedExportedAtStart &&
+      !isParentExpectedExported &&
+      !suppressedByParentClaim;
+
+    if (markAppRoot) {
+      span.setAttribute(ProofStateOtelSpanAttributes.IS_APP_ROOT, true);
+    }
+  }
+
+  private isExpectedExportedAtStart(span: Span): boolean {
+    // Span (from sdk-trace-base) already implements ReadableSpan, so the cast
+    // is safe and avoids depending on private OTel APIs.
+    const readable = span as unknown as ReadableSpan;
+
+    try {
+      return this.shouldExportSpan({ otelSpan: readable }) === true;
+    } catch (err) {
+      this.logger.debug(
+        "shouldExportSpan threw during app-root start-time check. " +
+          "Span will not be marked as app root.",
+        {
+          spanName: span.name,
+          instrumentationScope: readable.instrumentationScope.name,
+        },
+        err,
+      );
+
+      return false;
+    }
+  }
+
+  private async applyMaskInPlace(span: ReadableSpan): Promise<void> {
+    const maskCandidates = [
+      ProofStateOtelSpanAttributes.OBSERVATION_INPUT,
+      ProofStateOtelSpanAttributes.TRACE_INPUT,
+      ProofStateOtelSpanAttributes.OBSERVATION_OUTPUT,
+      ProofStateOtelSpanAttributes.TRACE_OUTPUT,
+      ProofStateOtelSpanAttributes.OBSERVATION_METADATA,
+      ProofStateOtelSpanAttributes.TRACE_METADATA,
+    ];
+
+    for (const maskCandidate of maskCandidates) {
+      if (maskCandidate in span.attributes) {
+        span.attributes[maskCandidate] = await this.applyMask(
+          span.attributes[maskCandidate],
+        );
+      }
+    }
+  }
+
+  private async applyMask<T>(data: T): Promise<T | string> {
+    if (!this.mask) return data;
+
+    try {
+      return await this.mask({ data });
+    } catch (err) {
+      this.logger.warn(
+        `Applying mask function failed due to error, fully masking property. Error: ${err}`,
+      );
+
+      return "<fully masked due to failed mask function>";
+    }
+  }
+}

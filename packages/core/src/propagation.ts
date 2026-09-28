@@ -1,0 +1,1067 @@
+/**
+ * Attribute propagation utilities for ProofState OpenTelemetry integration.
+ *
+ * This module provides the `propagateAttributes` function for setting trace-level
+ * attributes (userId, sessionId, environment, metadata) that automatically propagate
+ * to all child spans within the context.
+ */
+
+import {
+  context as otelContextApi,
+  trace as otelTraceApi,
+  propagation,
+  Context,
+  createContextKey,
+} from "@opentelemetry/api";
+
+import {
+  PROOFSTATE_SDK_EXPERIMENT_ENVIRONMENT,
+  ProofStateOtelSpanAttributes,
+} from "./constants.js";
+import { getGlobalLogger } from "./logger/index.js";
+
+type CorrelatedKey =
+  | "userId"
+  | "sessionId"
+  | "metadata"
+  | "version"
+  | "tags"
+  | "traceName"
+  | "environment"
+  | "promptName"
+  | "promptVersion";
+
+const experimentKeys = [
+  "experimentId",
+  "experimentName",
+  "experimentMetadata",
+  "experimentDatasetId",
+  "experimentItemId",
+  "experimentItemMetadata",
+  "experimentItemRootObservationId",
+] as const;
+type ExperimentKey = (typeof experimentKeys)[number];
+type PropagatedKey = CorrelatedKey | ExperimentKey;
+
+type PropagatedExperimentAttributes = {
+  experimentId: string;
+  experimentName: string;
+  experimentMetadata?: string; // serialized JSON
+  experimentDatasetId?: string;
+  experimentItemId: string;
+  experimentItemMetadata?: string; // serialized JSON
+  experimentItemRootObservationId: string;
+};
+
+export const ProofStateOtelContextKeys: Record<PropagatedKey, symbol> = {
+  userId: createContextKey("proofstate_user_id"),
+  sessionId: createContextKey("proofstate_session_id"),
+  metadata: createContextKey("proofstate_metadata"),
+  version: createContextKey("proofstate_version"),
+  tags: createContextKey("proofstate_tags"),
+  traceName: createContextKey("proofstate_trace_name"),
+  environment: createContextKey("proofstate_environment"),
+  promptName: createContextKey("proofstate_prompt_name"),
+  promptVersion: createContextKey("proofstate_prompt_version"),
+
+  // Experiments
+  experimentId: createContextKey("proofstate_experiment_id"),
+  experimentName: createContextKey("proofstate_experiment_name"),
+  experimentMetadata: createContextKey("proofstate_experiment_metadata"),
+  experimentDatasetId: createContextKey("proofstate_experiment_dataset_id"),
+  experimentItemId: createContextKey("proofstate_experiment_item_id"),
+  experimentItemMetadata: createContextKey(
+    "proofstate_experiment_item_metadata",
+  ),
+  experimentItemRootObservationId: createContextKey(
+    "proofstate_experiment_item_root_observation_id",
+  ),
+};
+
+const PROOFSTATE_BAGGAGE_PREFIX = "proofstate_";
+const PROOFSTATE_BAGGAGE_TAGS_SEPARATOR = ",";
+
+/**
+ * Baggage key used by the SDK to claim that an upstream ProofState-controlled
+ * scope already exists for a given trace id. Downstream processors read this
+ * to suppress duplicate app-root markers across services.
+ *
+ * @internal
+ */
+export const PROOFSTATE_TRACE_ID_BAGGAGE_KEY = "proofstate_trace_id";
+
+/**
+ * Reads the ProofState trace-id app-root claim from the baggage attached to a
+ * context. Returns the lowercased trace id, or undefined if no claim exists.
+ *
+ * @internal
+ */
+export function getProofStateTraceIdFromBaggage(
+  context: Context,
+): string | undefined {
+  const baggage = propagation.getBaggage(context);
+  const entry = baggage?.getEntry(PROOFSTATE_TRACE_ID_BAGGAGE_KEY);
+
+  if (!entry?.value) return undefined;
+
+  return entry.value.toLowerCase();
+}
+
+/**
+ * Returns a context that carries the ProofState trace-id app-root claim in
+ * baggage. If the context already carries the same claim, the original
+ * context is returned unchanged so we don't churn baggage instances.
+ *
+ * @internal
+ */
+export function setProofStateTraceIdInBaggage(
+  context: Context,
+  traceId: string,
+): Context {
+  const normalized = traceId.toLowerCase();
+
+  if (getProofStateTraceIdFromBaggage(context) === normalized) return context;
+
+  const baggage =
+    propagation.getBaggage(context) ?? propagation.createBaggage();
+  const updated = baggage.setEntry(PROOFSTATE_TRACE_ID_BAGGAGE_KEY, {
+    value: normalized,
+  });
+
+  return propagation.setBaggage(context, updated);
+}
+
+/**
+ * Prompt-like input accepted by {@link propagateAttributes}.
+ *
+ * Satisfied by prompt clients returned from ProofState prompt management
+ * (e.g. `proofstate.prompt.get(...)`) as well as plain objects exposing
+ * `name` and `version`.
+ *
+ * @public
+ */
+export type PropagatedPromptInput = {
+  /** Name of the prompt. Must be a non-empty string. */
+  name: string;
+  /** Version of the prompt. Must be an integer; digit-only strings (e.g. "5") are coerced. */
+  version: number | string;
+  /** Whether this is a fallback prompt. Fallback prompts are never linked. */
+  isFallback?: boolean;
+};
+
+/**
+ * Parameters for propagateAttributes function.
+ *
+ * @public
+ */
+export interface PropagateAttributesParams {
+  /**
+   * User identifier to associate with all spans in this context.
+   * Must be a string ≤200 characters. Use this to track which user
+   * generated each trace and enable e.g. per-user cost/performance analysis.
+   */
+  userId?: string;
+
+  /**
+   * Session identifier to associate with all spans in this context.
+   * Must be a string ≤200 characters. Use this to group related traces
+   * within a user session (e.g., a conversation thread, multi-turn interaction).
+   */
+  sessionId?: string;
+
+  /**
+   * Additional key-value metadata to propagate to all spans.
+   * - Keys and values must be strings
+   * - All values must be ≤200 characters
+   * - Use for dimensions like internal correlating identifiers
+   * - AVOID: large payloads, sensitive data, non-string values (will be dropped with warning)
+   */
+  metadata?: Record<string, string>;
+
+  /**
+   * Version identifier for parts of your application that are independently versioned, e.g. agents
+   */
+  version?: string;
+
+  /**
+   * List of tags to categorize the group of observations
+   */
+  tags?: string[];
+
+  /**
+   * Trace name to associate with all spans in this context.
+   * Must be a string ≤200 characters.
+   */
+  traceName?: string;
+
+  /**
+   * ProofState environment to associate with all spans in this context.
+   *
+   * Must be a lowercase alphanumeric string with optional hyphens or underscores,
+   * must be ≤40 characters, and must not start with `proofstate`. This maps to the
+   * first-class `proofstate.environment` attribute, not to trace metadata.
+   *
+   * A propagated environment takes precedence over the default configured on
+   * `ProofStateSpanProcessor` or via `PROOFSTATE_TRACING_ENVIRONMENT` while this
+   * propagation scope is active.
+   */
+  environment?: string;
+
+  /**
+   * ProofState prompt to link to observations created within this context.
+   *
+   * Accepts a prompt client returned by `proofstate.prompt.get(...)` or any plain
+   * object exposing `name` (non-empty string) and `version` (integer) — e.g.
+   * `{ name: "my-prompt", version: 3 }`. This is the recommended way to link
+   * prompts to generations emitted by auto-instrumentation libraries (e.g.
+   * OpenInference, other OTel instrumentations) where you don't create the
+   * generation via the ProofState SDK yourself.
+   *
+   * The prompt link is only applied to generation-type observations by the
+   * ProofState backend. Fallback prompts are never linked. An explicit `prompt`
+   * set directly on an observation takes precedence over the propagated one.
+   */
+  prompt?: PropagatedPromptInput;
+
+  /**
+   * If true, propagates attributes using OpenTelemetry baggage for
+   * cross-process/service propagation.
+   *
+   * **Security warning**: When enabled, attribute values are added to HTTP headers
+   * on ALL outbound requests. Only enable if values are safe to transmit via HTTP
+   * headers and you need cross-service tracing.
+   *
+   * @defaultValue false
+   */
+  asBaggage?: boolean;
+
+  /**
+   * **INTERNAL USE ONLY** - For ProofState experiment framework.
+   *
+   * This parameter is used internally by the ProofState experiment system to propagate
+   * experiment context to child spans. It should NOT be used by external code.
+   *
+   * @internal
+   */
+  _internalExperiment?: PropagatedExperimentAttributes;
+}
+
+/**
+ * Propagate trace-level attributes to all spans created within this context.
+ *
+ * This function sets attributes on the currently active span AND automatically
+ * propagates them to all new child spans created within the callback. This is the
+ * recommended way to set trace-level attributes like userId, sessionId, environment,
+ * and metadata dimensions that should be consistently applied across all observations
+ * in a trace.
+ *
+ * **IMPORTANT**: Call this as early as possible within your trace/workflow. Only the
+ * currently active span and spans created after entering this context will have these
+ * attributes. Pre-existing spans will NOT be retroactively updated.
+ *
+ * **Why this matters**: ProofState aggregation queries (e.g., total cost by userId,
+ * filtering by sessionId) only include observations that have the attribute set.
+ * If you call `propagateAttributes` late in your workflow, earlier spans won't be
+ * included in aggregations for that attribute.
+ *
+ * @param params - Configuration for attributes to propagate
+ * @param fn - Callback function (sync or async) within which attributes are propagated
+ * @returns The result of the callback function
+ *
+ * @example
+ * Basic usage with user and session tracking:
+ *
+ * ```typescript
+ * import { startActiveObservation, propagateAttributes } from '@proofstate/tracing';
+ *
+ * // Set attributes early in the trace
+ * await startActiveObservation('user_workflow', async (span) => {
+ *   await propagateAttributes({
+ *     userId: 'user_123',
+ *     sessionId: 'session_abc',
+ *     environment: 'production',
+ *     metadata: { experiment: 'variant_a' }
+ *   }, async () => {
+ *     // All spans created here will have userId, sessionId, environment, and metadata
+ *     const llmSpan = startObservation('llm_call', { input: 'Hello' });
+ *     // This span inherits userId, sessionId, environment, and experiment metadata
+ *     llmSpan.end();
+ *
+ *     const gen = startObservation('completion', {}, { asType: 'generation' });
+ *     // This span also inherits all attributes
+ *     gen.end();
+ *   });
+ * });
+ * ```
+ *
+ * @example
+ * Prompt linking with auto-instrumented libraries:
+ *
+ * ```typescript
+ * import { ProofStateClient } from '@proofstate/client';
+ * import { propagateAttributes } from '@proofstate/tracing';
+ *
+ * const proofstate = new ProofStateClient();
+ * const prompt = await proofstate.prompt.get('my-prompt');
+ *
+ * await propagateAttributes({ prompt }, async () => {
+ *   // Generations emitted by auto-instrumentation (OpenInference,
+ *   // other OTel instrumentations, ...) within this context are
+ *   // linked to the prompt version.
+ *   const completion = await openai.chat.completions.create({
+ *     model: 'gpt-4o',
+ *     messages: [{ role: 'user', content: prompt.compile({ topic: 'chickens' }) }],
+ *   });
+ * });
+ * ```
+ *
+ * @example
+ * Late propagation (anti-pattern):
+ *
+ * ```typescript
+ * await startActiveObservation('workflow', async (span) => {
+ *   // These spans WON'T have userId
+ *   const earlySpan = startObservation('early_work', { input: 'data' });
+ *   earlySpan.end();
+ *
+ *   // Set attributes in the middle
+ *   await propagateAttributes({ userId: 'user_123' }, async () => {
+ *     // Only spans created AFTER this point will have userId
+ *     const lateSpan = startObservation('late_work', { input: 'more' });
+ *     lateSpan.end();
+ *   });
+ *
+ *   // Result: Aggregations by userId will miss "early_work" span
+ * });
+ * ```
+ *
+ * @example
+ * Cross-service propagation with baggage (advanced):
+ *
+ * ```typescript
+ * import fetch from 'node-fetch';
+ *
+ * // Service A - originating service
+ * await startActiveObservation('api_request', async () => {
+ *   await propagateAttributes({
+ *     userId: 'user_123',
+ *     sessionId: 'session_abc',
+ *     environment: 'staging',
+ *     asBaggage: true  // Propagate via HTTP headers
+ *   }, async () => {
+ *     // Make HTTP request to Service B
+ *     const response = await fetch('https://service-b.example.com/api');
+ *     // userId, sessionId, and environment are now in HTTP headers
+ *   });
+ * });
+ *
+ * // Service B - downstream service
+ * // OpenTelemetry will automatically extract baggage from HTTP headers
+ * // and propagate to spans in Service B
+ * ```
+ *
+ * @remarks
+ * - **Validation**: Attribute values (userId, sessionId, metadata values) must be
+ *   strings ≤200 characters. Environment must be a lowercase alphanumeric string
+ *   with optional hyphens or underscores, must be ≤40 characters, and must not start
+ *   with `proofstate`. Invalid values will be dropped with a warning logged.
+ * - **OpenTelemetry**: This uses OpenTelemetry context propagation under the hood,
+ *   making it compatible with other OTel-instrumented libraries.
+ * - **Baggage Security**: When `asBaggage=true`, attribute values are added to HTTP
+ *   headers on outbound requests. Only use for non-sensitive values and when you
+ *   need cross-service tracing.
+ *
+ * @public
+ */
+export function propagateAttributes<
+  A extends unknown[],
+  F extends (...args: A) => ReturnType<F>,
+>(params: PropagateAttributesParams, fn: F): ReturnType<F> {
+  let context = otelContextApi.active();
+
+  const span = otelTraceApi.getActiveSpan();
+  const asBaggage = params.asBaggage ?? false;
+
+  const {
+    userId,
+    sessionId,
+    metadata,
+    version,
+    tags,
+    traceName,
+    environment,
+    prompt,
+    _internalExperiment,
+  } = params;
+
+  // Validate and set userId
+  if (userId) {
+    if (isValidPropagatedString({ value: userId, attributeName: "userId" })) {
+      context = setPropagatedAttribute({
+        key: "userId",
+        value: userId,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set sessionId
+  if (sessionId) {
+    if (
+      isValidPropagatedString({
+        value: sessionId,
+        attributeName: "sessionId",
+      })
+    ) {
+      context = setPropagatedAttribute({
+        key: "sessionId",
+        value: sessionId,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set version
+  if (version) {
+    if (
+      isValidPropagatedString({
+        value: version,
+        attributeName: "version",
+      })
+    ) {
+      context = setPropagatedAttribute({
+        key: "version",
+        value: version,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set traceName
+  if (traceName) {
+    if (
+      isValidPropagatedString({
+        value: traceName,
+        attributeName: "traceName",
+      })
+    ) {
+      context = setPropagatedAttribute({
+        key: "traceName",
+        value: traceName,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set environment
+  if (environment !== undefined && isValidEnvironment(environment)) {
+    context = setPropagatedAttribute({
+      key: "environment",
+      value: environment,
+      context,
+      span,
+      asBaggage,
+    });
+  }
+
+  // Validate and set tags
+  if (tags && tags.length > 0) {
+    const validTags = tags.filter((tag) =>
+      isValidPropagatedString({
+        value: tag,
+        attributeName: "tag",
+      }),
+    );
+
+    if (validTags.length > 0) {
+      context = setPropagatedAttribute({
+        key: "tags",
+        value: validTags,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set metadata
+  if (metadata) {
+    // Filter metadata to only include valid string values
+    const validatedMetadata: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(metadata)) {
+      if (
+        isValidPropagatedString({
+          value: value,
+          attributeName: `metadata.${key}`,
+        })
+      ) {
+        validatedMetadata[key] = value;
+      }
+    }
+
+    if (Object.keys(validatedMetadata).length > 0) {
+      context = setPropagatedAttribute({
+        key: "metadata",
+        value: validatedMetadata,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Validate and set prompt
+  if (prompt) {
+    const propagatedPrompt = extractPropagatedPrompt(prompt);
+
+    if (propagatedPrompt) {
+      context = setPropagatedAttribute({
+        key: "promptName",
+        value: propagatedPrompt.name,
+        context,
+        span,
+        asBaggage,
+      });
+      context = setPropagatedAttribute({
+        key: "promptVersion",
+        value: propagatedPrompt.version,
+        context,
+        span,
+        asBaggage,
+      });
+    }
+  }
+
+  // Handle experiment attributes
+  if (_internalExperiment) {
+    for (const [key, value] of Object.entries(_internalExperiment)) {
+      if (value !== undefined) {
+        // Experiment attributes are already serialized, no validation needed
+        context = setPropagatedAttribute({
+          key: key as ExperimentKey,
+          value,
+          context,
+          span,
+          asBaggage,
+        });
+      }
+    }
+  }
+
+  // Execute callback in the new context
+  return otelContextApi.with(context, fn);
+}
+
+/**
+ * Extracts and validates `{ name, version }` from a prompt-like value.
+ *
+ * Accepts a prompt client or any plain object exposing `name` and `version`.
+ * Returns null (with a log) if the value is invalid or a fallback prompt.
+ *
+ * @internal
+ */
+function extractPropagatedPrompt(
+  prompt: PropagatedPromptInput,
+): { name: string; version: number } | null {
+  const logger = getGlobalLogger();
+  const { name, version: rawVersion, isFallback } = prompt;
+
+  if (isFallback) {
+    logger.debug(
+      "Propagated prompt is a fallback prompt. Skipping prompt linking.",
+    );
+
+    return null;
+  }
+
+  if (typeof name !== "string" || name.length === 0) {
+    logger.warn(
+      "Propagated 'prompt' has no valid 'name' (non-empty string required). Dropping prompt link.",
+    );
+
+    return null;
+  }
+
+  const version =
+    typeof rawVersion === "string" && /^\d+$/.test(rawVersion)
+      ? Number(rawVersion)
+      : rawVersion;
+
+  if (typeof version !== "number" || !Number.isInteger(version)) {
+    logger.warn(
+      "Propagated 'prompt' has no valid 'version' (integer required). Dropping prompt link.",
+    );
+
+    return null;
+  }
+
+  return { name, version };
+}
+
+export function getPropagatedAttributesFromContext(
+  context: Context,
+): Record<string, string | string[] | number> {
+  const propagatedAttributes: Record<string, string | string[] | number> = {};
+
+  // Handle baggage
+  const baggage = propagation.getBaggage(context);
+
+  if (baggage) {
+    baggage.getAllEntries().forEach(([baggageKey, baggageEntry]) => {
+      if (baggageKey === PROOFSTATE_TRACE_ID_BAGGAGE_KEY) return;
+
+      if (baggageKey.startsWith(PROOFSTATE_BAGGAGE_PREFIX)) {
+        const spanKey = getSpanKeyFromBaggageKey(baggageKey);
+
+        if (spanKey) {
+          if (spanKey === ProofStateOtelSpanAttributes.ENVIRONMENT) {
+            if (isValidEnvironment(baggageEntry.value)) {
+              propagatedAttributes[spanKey] = baggageEntry.value;
+            }
+
+            return;
+          }
+
+          // Prompt version is an integer span attribute; restore it from its
+          // string representation in baggage
+          if (
+            spanKey ===
+              ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION &&
+            /^\d+$/.test(baggageEntry.value)
+          ) {
+            propagatedAttributes[spanKey] = Number(baggageEntry.value);
+
+            return;
+          }
+
+          const isMergedTags =
+            baggageKey == getBaggageKeyForPropagatedKey("tags");
+
+          propagatedAttributes[spanKey] = isMergedTags
+            ? baggageEntry.value.split(PROOFSTATE_BAGGAGE_TAGS_SEPARATOR)
+            : baggageEntry.value;
+        }
+      }
+    });
+  }
+
+  // Handle OTEL context values
+  const userId = context.getValue(ProofStateOtelContextKeys["userId"]);
+  if (userId && typeof userId === "string") {
+    const spanKey = getSpanKeyForPropagatedKey("userId");
+
+    propagatedAttributes[spanKey] = userId;
+  }
+
+  const sessionId = context.getValue(ProofStateOtelContextKeys["sessionId"]);
+  if (sessionId && typeof sessionId === "string") {
+    const spanKey = getSpanKeyForPropagatedKey("sessionId");
+
+    propagatedAttributes[spanKey] = sessionId;
+  }
+
+  const version = context.getValue(ProofStateOtelContextKeys["version"]);
+  if (version && typeof version === "string") {
+    const spanKey = getSpanKeyForPropagatedKey("version");
+
+    propagatedAttributes[spanKey] = version;
+  }
+
+  const traceName = context.getValue(ProofStateOtelContextKeys["traceName"]);
+  if (traceName && typeof traceName === "string") {
+    const spanKey = getSpanKeyForPropagatedKey("traceName");
+
+    propagatedAttributes[spanKey] = traceName;
+  }
+
+  const environment = context.getValue(
+    ProofStateOtelContextKeys["environment"],
+  );
+  if (isValidEnvironment(environment)) {
+    propagatedAttributes[ProofStateOtelSpanAttributes.ENVIRONMENT] =
+      environment;
+  }
+
+  const tags = context.getValue(ProofStateOtelContextKeys["tags"]);
+  if (tags && Array.isArray(tags)) {
+    const spanKey = getSpanKeyForPropagatedKey("tags");
+
+    propagatedAttributes[spanKey] = tags;
+  }
+
+  const promptName = context.getValue(ProofStateOtelContextKeys["promptName"]);
+  if (promptName && typeof promptName === "string") {
+    const spanKey = getSpanKeyForPropagatedKey("promptName");
+
+    propagatedAttributes[spanKey] = promptName;
+  }
+
+  const promptVersion = context.getValue(
+    ProofStateOtelContextKeys["promptVersion"],
+  );
+  if (typeof promptVersion === "number") {
+    const spanKey = getSpanKeyForPropagatedKey("promptVersion");
+
+    propagatedAttributes[spanKey] = promptVersion;
+  }
+
+  const metadata = context.getValue(ProofStateOtelContextKeys["metadata"]);
+  if (metadata && typeof metadata === "object" && metadata !== null) {
+    for (const [k, v] of Object.entries(metadata)) {
+      const spanKey = `${ProofStateOtelSpanAttributes.TRACE_METADATA}.${k}`;
+
+      propagatedAttributes[spanKey] = String(v);
+    }
+  }
+
+  // Extract experiment attributes
+  for (const key of experimentKeys) {
+    const contextKey = ProofStateOtelContextKeys[key];
+    const value = context.getValue(contextKey);
+
+    if (value && typeof value === "string") {
+      const spanKey = getSpanKeyForPropagatedKey(key);
+      propagatedAttributes[spanKey] = value;
+    }
+  }
+
+  // add environment if propagation is for experiment
+  if (
+    propagatedAttributes[
+      getSpanKeyForPropagatedKey("experimentItemRootObservationId")
+    ]
+  ) {
+    propagatedAttributes[ProofStateOtelSpanAttributes.ENVIRONMENT] =
+      PROOFSTATE_SDK_EXPERIMENT_ENVIRONMENT;
+  }
+
+  return propagatedAttributes;
+}
+
+type SetPropagatedAttributeParams = {
+  context: Context;
+  span: ReturnType<typeof otelTraceApi.getActiveSpan>;
+  asBaggage: boolean;
+} & (
+  | {
+      key:
+        | "userId"
+        | "sessionId"
+        | "version"
+        | "traceName"
+        | "environment"
+        | "promptName"
+        | ExperimentKey;
+      value: string;
+    }
+  | {
+      key: "promptVersion";
+      value: number;
+    }
+  | {
+      key: "metadata";
+      value: Record<string, string>;
+    }
+  | {
+      key: "tags";
+      value: string[];
+    }
+);
+
+function setPropagatedAttribute(params: SetPropagatedAttributeParams): Context {
+  const { key, value, span, asBaggage } = params;
+
+  let context = params.context;
+  let mergedMetadata: Record<string, string> =
+    key === "metadata" ? getContextMergedMetadata(context, value) : {};
+  let mergedTags = key === "tags" ? getContextMergedTags(context, value) : [];
+
+  // Get the context key for this attribute
+  const contextKey = getContextKeyForPropagatedKey(key);
+
+  // Set in context
+  if (key === "metadata") {
+    context = context.setValue(contextKey, mergedMetadata);
+  } else if (key === "tags") {
+    context = context.setValue(contextKey, mergedTags);
+  } else {
+    context = context.setValue(contextKey, value);
+  }
+
+  // Set on current span
+  if (span && span.isRecording()) {
+    if (key === "metadata") {
+      for (const [k, v] of Object.entries(mergedMetadata)) {
+        span.setAttribute(
+          `${ProofStateOtelSpanAttributes.TRACE_METADATA}.${k}`,
+          v,
+        );
+      }
+    } else if (key === "tags") {
+      const spanKey = getSpanKeyForPropagatedKey(key);
+      span.setAttribute(spanKey, mergedTags);
+    } else {
+      const spanKey = getSpanKeyForPropagatedKey(key);
+      span.setAttribute(spanKey, value);
+    }
+  }
+
+  // Set on baggage
+  if (asBaggage) {
+    const baggageKey = getBaggageKeyForPropagatedKey(key);
+    let baggage =
+      propagation.getBaggage(context) || propagation.createBaggage();
+
+    if (key === "metadata") {
+      for (const [k, v] of Object.entries(mergedMetadata)) {
+        baggage = baggage.setEntry(`${baggageKey}_${k}`, { value: v });
+      }
+    } else if (key === "tags") {
+      baggage = baggage.setEntry(baggageKey, {
+        value: mergedTags.join(PROOFSTATE_BAGGAGE_TAGS_SEPARATOR),
+      });
+    } else {
+      // Baggage values must be strings; integer values (prompt version) are
+      // restored to numbers when reading the baggage back
+      baggage = baggage.setEntry(baggageKey, { value: String(value) });
+    }
+
+    context = propagation.setBaggage(context, baggage);
+  }
+
+  return context;
+}
+
+function getContextMergedTags(context: Context, newTags: string[]): string[] {
+  const existingTags = context.getValue(ProofStateOtelContextKeys["tags"]);
+
+  if (existingTags && Array.isArray(existingTags)) {
+    return [...new Set([...existingTags, ...newTags])];
+  } else {
+    return newTags;
+  }
+}
+
+function getContextMergedMetadata(
+  context: Context,
+  newMetadata: Record<string, string>,
+): Record<string, string> {
+  const existingMetadata = context.getValue(
+    ProofStateOtelContextKeys["metadata"],
+  );
+
+  if (
+    existingMetadata &&
+    typeof existingMetadata === "object" &&
+    existingMetadata !== null &&
+    !Array.isArray(existingMetadata)
+  ) {
+    return { ...(existingMetadata as Record<string, string>), ...newMetadata };
+  } else {
+    return newMetadata;
+  }
+}
+
+function isValidPropagatedString(params: {
+  value: string;
+  attributeName: string;
+}): boolean {
+  const logger = getGlobalLogger();
+  const { value, attributeName } = params;
+
+  if (typeof value !== "string") {
+    logger.warn(
+      `Propagated attribute '${attributeName}' must be a string. Dropping value.`,
+    );
+    return false;
+  }
+
+  if (value.length > 200) {
+    logger.warn(
+      `Propagated attribute '${attributeName}' value is over 200 characters (${value.length} chars). Dropping value.`,
+    );
+
+    return false;
+  }
+
+  return true;
+}
+
+const ENVIRONMENT_VALUE_PATTERN = /^(?!proofstate)[a-z0-9_-]+$/;
+
+function isValidEnvironment(value: unknown): value is string {
+  const logger = getGlobalLogger();
+
+  if (typeof value !== "string") {
+    if (value !== undefined) {
+      logger.warn(
+        "Propagated attribute 'environment' must be a string. Dropping value.",
+      );
+    }
+
+    return false;
+  }
+
+  if (value.length > 40) {
+    logger.warn(
+      `Propagated attribute 'environment' value is over 40 characters (${value.length} chars). Dropping value.`,
+    );
+
+    return false;
+  }
+
+  if (!ENVIRONMENT_VALUE_PATTERN.test(value)) {
+    logger.warn(
+      "Propagated attribute 'environment' must be a lowercase alphanumeric string with optional hyphens or underscores and must not start with 'proofstate'. Dropping value.",
+    );
+
+    return false;
+  }
+
+  return true;
+}
+
+function getContextKeyForPropagatedKey(key: PropagatedKey): symbol {
+  return ProofStateOtelContextKeys[key];
+}
+
+function getSpanKeyForPropagatedKey(key: PropagatedKey): string {
+  switch (key) {
+    case "userId":
+      return ProofStateOtelSpanAttributes.TRACE_USER_ID;
+    case "sessionId":
+      return ProofStateOtelSpanAttributes.TRACE_SESSION_ID;
+    case "version":
+      return ProofStateOtelSpanAttributes.VERSION;
+    case "traceName":
+      return ProofStateOtelSpanAttributes.TRACE_NAME;
+    case "environment":
+      return ProofStateOtelSpanAttributes.ENVIRONMENT;
+    case "metadata":
+      return ProofStateOtelSpanAttributes.TRACE_METADATA;
+    case "tags":
+      return ProofStateOtelSpanAttributes.TRACE_TAGS;
+    case "promptName":
+      return ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_NAME;
+    case "promptVersion":
+      return ProofStateOtelSpanAttributes.OBSERVATION_PROMPT_VERSION;
+    case "experimentId":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_ID;
+    case "experimentName":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_NAME;
+    case "experimentMetadata":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_METADATA;
+    case "experimentDatasetId":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_DATASET_ID;
+    case "experimentItemId":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_ITEM_ID;
+    case "experimentItemMetadata":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_ITEM_METADATA;
+    case "experimentItemRootObservationId":
+      return ProofStateOtelSpanAttributes.EXPERIMENT_ITEM_ROOT_OBSERVATION_ID;
+    default: {
+      const fallback: never = key;
+
+      throw Error("Unhandled propagated key", fallback);
+    }
+  }
+}
+
+function getBaggageKeyForPropagatedKey(key: PropagatedKey): string {
+  // baggage keys must be snake case for correct cross service propagation
+  // second service might run Python SDK that is expecting snake case keys
+  switch (key) {
+    case "userId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}user_id`;
+    case "sessionId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}session_id`;
+    case "version":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}version`;
+    case "traceName":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}trace_name`;
+    case "environment":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}environment`;
+    case "metadata":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}metadata`;
+    case "tags":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}tags`;
+    case "promptName":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}prompt_name`;
+    case "promptVersion":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}prompt_version`;
+    case "experimentId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_id`;
+    case "experimentName":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_name`;
+    case "experimentMetadata":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_metadata`;
+    case "experimentDatasetId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_dataset_id`;
+    case "experimentItemId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_item_id`;
+    case "experimentItemMetadata":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_item_metadata`;
+    case "experimentItemRootObservationId":
+      return `${PROOFSTATE_BAGGAGE_PREFIX}experiment_item_root_observation_id`;
+    default: {
+      const fallback: never = key;
+
+      throw Error("Unhandled propagated key", fallback);
+    }
+  }
+}
+
+function getSpanKeyFromBaggageKey(baggageKey: string): string | undefined {
+  if (!baggageKey.startsWith(PROOFSTATE_BAGGAGE_PREFIX)) return;
+
+  const suffix = baggageKey.slice(PROOFSTATE_BAGGAGE_PREFIX.length);
+
+  // Metadata keys have format: proofstate_metadata_{key_name}
+  if (suffix.startsWith("metadata_")) {
+    const metadataKey = suffix.slice("metadata_".length);
+
+    return `${ProofStateOtelSpanAttributes.TRACE_METADATA}.${metadataKey}`;
+  }
+
+  switch (suffix) {
+    case "user_id":
+      return getSpanKeyForPropagatedKey("userId");
+    case "session_id":
+      return getSpanKeyForPropagatedKey("sessionId");
+    case "version":
+      return getSpanKeyForPropagatedKey("version");
+    case "trace_name":
+      return getSpanKeyForPropagatedKey("traceName");
+    case "environment":
+      return getSpanKeyForPropagatedKey("environment");
+    case "tags":
+      return getSpanKeyForPropagatedKey("tags");
+    case "prompt_name":
+      return getSpanKeyForPropagatedKey("promptName");
+    case "prompt_version":
+      return getSpanKeyForPropagatedKey("promptVersion");
+    case "experiment_id":
+      return getSpanKeyForPropagatedKey("experimentId");
+    case "experiment_name":
+      return getSpanKeyForPropagatedKey("experimentName");
+    case "experiment_metadata":
+      return getSpanKeyForPropagatedKey("experimentMetadata");
+    case "experiment_dataset_id":
+      return getSpanKeyForPropagatedKey("experimentDatasetId");
+    case "experiment_item_id":
+      return getSpanKeyForPropagatedKey("experimentItemId");
+    case "experiment_item_metadata":
+      return getSpanKeyForPropagatedKey("experimentItemMetadata");
+    case "experiment_item_root_observation_id":
+      return getSpanKeyForPropagatedKey("experimentItemRootObservationId");
+  }
+}
