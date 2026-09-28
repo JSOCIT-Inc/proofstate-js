@@ -1,6 +1,6 @@
 # ProofState JavaScript and TypeScript SDK
 
-Eight modular packages for traces, prompts, datasets, scores, and framework integrations with [ProofState](https://proofstate.ai). This fork is based on an MIT-licensed upstream SDK at version 5.11.1. The original copyright and license remain in [LICENSE](LICENSE).
+Eight modular packages for traces, prompts, datasets, scores, and framework integrations with [ProofState](https://proofstate.ai). The required MIT copyright and license notices are in [LICENSE](LICENSE).
 
 This repository contains source prereleases. The packages are not yet published to npm or verified against the live ProofState deployment. Use them with a matching server revision after authenticated end-to-end checks.
 
@@ -75,6 +75,6 @@ The SDK sends `X-ProofState-*` headers, `proofstate.*` span attributes, the `pro
 1. Claim and control the npm `@proofstate` scope. The source repository is [JSOCIT-Inc/proofstate-js](https://github.com/JSOCIT-Inc/proofstate-js); configure its release ownership and credentials.
 2. Review the package versions and release process. All eight packages use lockstep versions and workspace dependencies; publish `core` first, then dependent packages in topological order. `pnpm` converts `workspace:^` references when publishing.
 3. Run `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test:unit`, `pnpm test:integration`, `pnpm lint`, `pnpm typecheck`, `pnpm generated-docs:check`, `pnpm format:check`, and inspect `pnpm pack` contents for each package. Run authenticated E2E tests against a ProofState test project.
-4. Configure scoped npm credentials and provenance in the new repository, then create a ProofState release workflow. The upstream publish workflow and release scripts were removed from this fork.
+4. Configure scoped npm credentials and provenance in this repository, then create a ProofState release workflow. No release workflow is configured yet.
 
 Cloning or building this repository does not publish packages to npm.
