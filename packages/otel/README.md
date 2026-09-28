@@ -9,4 +9,4 @@ const sdk = new NodeSDK({ spanProcessors: [new ProofStateSpanProcessor()] });
 sdk.start();
 ```
 
-The processor keeps the server's required OpenTelemetry wire names. See the [root README](../../README.md) for setup and publishing details.
+The processor keeps the server's required OpenTelemetry wire names. See the [root README](https://github.com/JSOCIT-Inc/proofstate-js#readme) for setup and publishing details.

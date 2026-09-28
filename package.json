@@ -1,6 +1,6 @@
 {
   "name": "proofstate-js",
-  "version": "5.11.1",
+  "version": "0.1.0-rc.1",
   "description": "ProofState JavaScript / TypeScript SDK",
   "author": "ProofState",
   "repository": "https://github.com/JSOCIT-Inc/proofstate-js",
@@ -28,6 +28,7 @@
     "typecheck": "tsc -b --noEmit",
     "generated-docs:sanitize": "node scripts/sanitize-generated-api-docs.mjs",
     "generated-docs:check": "node scripts/sanitize-generated-api-docs.mjs --check",
+    "release:pack": "pnpm build && node scripts/release-npm.mjs --pack",
     "ci": "pnpm build && pnpm test:unit && pnpm test:integration && pnpm lint && pnpm typecheck && pnpm generated-docs:check && pnpm format:check",
     "clean": "pnpm -r run clean && rm -rf packages/*/dist && rm -f packages/*/tsconfig.tsbuildinfo",
     "nuke": "pnpm clean && rm -rf node_modules && rm -rf packages/*/node_modules && pnpm install",

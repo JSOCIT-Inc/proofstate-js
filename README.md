@@ -2,7 +2,7 @@
 
 Eight modular packages for traces, prompts, datasets, scores, and framework integrations with [ProofState](https://proofstate.ai). The required MIT copyright and license notices are in [LICENSE](LICENSE).
 
-This repository contains source prereleases. The packages are not yet published to npm or verified against the live ProofState deployment. Use them with a matching server revision after authenticated end-to-end checks.
+This repository contains the `0.1.0-rc.1` source prerelease. The packages are not yet published to npm or verified against the live ProofState deployment. Use them with a matching server revision after authenticated end-to-end checks.
 
 ## Packages
 
@@ -70,11 +70,13 @@ Use `ProofStateBrowserClient` with a public key for browser scores. Never put th
 
 The SDK sends `X-ProofState-*` headers, `proofstate.*` span attributes, the `proofstate-sdk` instrumentation scope, `proofstate_` baggage, and `@@@proofstateMedia` references. Its SDK name is `proofstate-javascript` and OTel export sets `x-proofstate-ingestion-version: 4`. These wire names require the matching ProofState server update to be deployed at the same time. The bundled REST client mirrors the available API definition; individual methods still require authenticated testing against the target deployment.
 
-## Publishing prerequisites
+## Releasing a prerelease
 
-1. Claim and control the npm `@proofstate` scope. The source repository is [JSOCIT-Inc/proofstate-js](https://github.com/JSOCIT-Inc/proofstate-js); configure its release ownership and credentials.
-2. Review the package versions and release process. All eight packages use lockstep versions and workspace dependencies; publish `core` first, then dependent packages in topological order. `pnpm` converts `workspace:^` references when publishing.
-3. Run `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test:unit`, `pnpm test:integration`, `pnpm lint`, `pnpm typecheck`, `pnpm generated-docs:check`, `pnpm format:check`, and inspect `pnpm pack` contents for each package. Run authenticated E2E tests against a ProofState test project.
-4. Configure scoped npm credentials and provenance in this repository, then create a ProofState release workflow. No release workflow is configured yet.
+1. An authorized maintainer must own the npm `@proofstate` organization or scope. GitHub organization membership does not grant npm publication rights. Check `npm whoami` and the npm scope owner before publishing.
+2. Deploy the matching ProofState server revision to a test environment and run authenticated `pnpm test:e2e` with test-project keys. Verify a trace, prompt, dataset, and score in ProofState before releasing packages.
+3. Run `pnpm install --frozen-lockfile` and `pnpm run ci`. Then run `pnpm release:pack` to build eight tarballs under `release-artifacts/`. The pack script checks lockstep prerelease versions, the package dependency order, public package metadata, bundled license, entrypoints, and converted `workspace:^` ranges. Review the tarballs before the first publication.
+4. The first publication needs an interactive npm login because npm trusted publishing can only be configured for a package that already exists. Publish the `release-artifacts/*.tgz` files with `npm publish <tarball> --access public --tag next` in the order printed by the pack script. Use an npm account with two-factor authentication and write access to `@proofstate`; never commit a token. Do not use the default `latest` tag for this prerelease.
+5. After all eight packages exist, configure a GitHub Actions trusted publisher **for each package** on npm. Use repository `JSOCIT-Inc/proofstate-js`, workflow filename `publish.yml`, no environment name, and permit direct `npm publish`. The [release workflow](.github/workflows/publish.yml) uses OIDC without npm tokens; npm generates provenance for public packages published from this public repository.
+6. For later prereleases, update the root and eight package versions together, verify the matching server and SDK, create and push a `js-v<version>` tag on the reviewed commit, then manually run the `Publish npm prerelease` workflow on that tag. Enter the selected tag exactly in `confirm_tag`. The workflow packs and publishes packages in dependency order under the `next` tag.
 
-Cloning or building this repository does not publish packages to npm.
+Cloning, building, and packing this repository do not publish packages to npm. The release workflow cannot publish until the npm scope and trusted publishers are configured.

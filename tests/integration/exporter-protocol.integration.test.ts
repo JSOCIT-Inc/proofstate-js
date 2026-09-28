@@ -1,7 +1,10 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { PROOFSTATE_TRACER_NAME } from "@proofstate/core";
+import {
+  PROOFSTATE_SDK_VERSION,
+  PROOFSTATE_TRACER_NAME,
+} from "@proofstate/core";
 import { ProofStateSpanProcessor } from "@proofstate/otel";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { describe, expect, it } from "vitest";
@@ -52,7 +55,9 @@ describe("ProofState OTel wire protocol", () => {
             "x-proofstate-ingestion-version": "4",
           },
         });
-        expect(requests[0].headers["x-proofstate-sdk-version"]).toMatch(/^5\./);
+        expect(requests[0].headers["x-proofstate-sdk-version"]).toBe(
+          PROOFSTATE_SDK_VERSION,
+        );
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

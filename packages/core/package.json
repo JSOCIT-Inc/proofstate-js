@@ -1,6 +1,6 @@
 {
   "name": "@proofstate/core",
-  "version": "5.11.1",
+  "version": "0.1.0-rc.1",
   "description": "Core functions and utilities for ProofState packages",
   "type": "module",
   "sideEffects": false,

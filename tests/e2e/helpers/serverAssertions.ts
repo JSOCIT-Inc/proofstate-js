@@ -35,6 +35,26 @@ export class ServerAssertions {
     return this.api.trace.get(traceId);
   }
 
+  async waitForScore(scoreId: string, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        return await this.api.scores.getById(scoreId);
+      } catch (error) {
+        if ((error as { statusCode?: number }).statusCode !== 404) throw error;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Score ${scoreId} was not visible after ${timeoutMs} ms`,
+            {
+              cause: error,
+            },
+          );
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+
   async fetchTraces(
     options: {
       name?: string;

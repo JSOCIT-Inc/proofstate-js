@@ -1,6 +1,6 @@
 {
   "name": "@proofstate/client",
-  "version": "5.11.1",
+  "version": "0.1.0-rc.1",
   "description": "ProofState API client for universal JavaScript environments",
   "type": "module",
   "sideEffects": false,

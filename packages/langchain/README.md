@@ -8,4 +8,4 @@ const handler = new CallbackHandler({ userId: "user-123" });
 // Pass { callbacks: [handler] } to a LangChain invocation.
 ```
 
-Prompt metadata can use `proofstatePrompt`. See the [root README](../../README.md) for setup and publishing details.
+Prompt metadata can use `proofstatePrompt`. See the [root README](https://github.com/JSOCIT-Inc/proofstate-js#readme) for setup and publishing details.

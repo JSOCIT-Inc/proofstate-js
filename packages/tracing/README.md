@@ -9,4 +9,4 @@ await startActiveObservation("answer-question", async (span) => {
 });
 ```
 
-Register a `ProofStateSpanProcessor` before creating spans. See the [root README](../../README.md) for a complete setup.
+Register a `ProofStateSpanProcessor` before creating spans. See the [root README](https://github.com/JSOCIT-Inc/proofstate-js#readme) for a complete setup.

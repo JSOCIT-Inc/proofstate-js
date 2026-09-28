@@ -8,4 +8,4 @@ const api = new ProofStateAPIClient(); // reads PROOFSTATE_* keys; defaults to h
 const observations = await api.observations.getMany();
 ```
 
-The generated REST routes and wire fields target the matching ProofState server revision; live compatibility still needs authenticated testing. See the [root README](../../README.md) for setup and publishing details.
+The generated REST routes and wire fields target the matching ProofState server revision; live compatibility still needs authenticated testing. See the [root README](https://github.com/JSOCIT-Inc/proofstate-js#readme) for setup and publishing details.
