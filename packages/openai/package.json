@@ -1,6 +1,6 @@
 {
   "name": "@proofstate/openai",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "ProofState integration for OpenAI SDK",
   "type": "module",
   "sideEffects": false,
