@@ -42,6 +42,7 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-latest
+    environment: npm
     timeout-minutes: 10
     permissions:
       contents: read
