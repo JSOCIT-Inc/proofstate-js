@@ -1,6 +1,6 @@
 {
   "name": "@proofstate/vercel-ai-sdk",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "ProofState integration for Vercel AI SDK v7",
   "type": "module",
   "sideEffects": false,
